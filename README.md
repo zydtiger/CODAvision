@@ -12,6 +12,7 @@ CODAvision is an open-source Python package designed for semantic segmentation o
    - [Hardware](#️-hardware)
    - [Software](#-software)
 2. [Installation Guide](#️-2-installation-guide)
+   - [Linux with uv](#linux-with-uv)
    - [Step 1: Install Miniconda](#-step-1-install-miniconda)
    - [Step 2: Create and Activate CODAvision Environment](#-step-2-create-and-activate-codavision-environment)
    - [Step 3: Install CUDA Toolkit and cuDNN](#-step-3-install-cuda-toolkit-and-cudnn)
@@ -58,6 +59,62 @@ CODAvision is an open-source Python package designed for semantic segmentation o
 
 ## ⚙️ 2. Installation Guide
 
+### Linux with uv
+
+The reproducible uv environment targets Linux x86_64 with Python 3.10.
+It runs TensorFlow and PyTorch in the same environment and GUI, using
+TensorFlow 2.21, legacy Keras 2 (`tf-keras`), PyTorch 2.11/torchvision 0.26
+with CUDA 12.8, and NumPy 1.26.4. Framework selection and model checkpoint
+detection follow the existing CODAvision configuration.
+
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/), then
+run these commands from your CODAvision checkout:
+
+```bash
+uv sync --locked --extra gpu
+uv run --locked --extra gpu CODAvision
+```
+
+uv creates a local `.venv`, installs Python if needed, and selects the
+PyTorch cu128 wheel index declared in `pyproject.toml`. Keep `--extra gpu`
+on both commands so TensorFlow's CUDA dependencies remain installed. Avoid
+mixing manual pip installations into this environment; uv synchronizes it
+to `uv.lock`.
+
+A working NVIDIA driver and desktop display are required. For Blackwell
+GPUs, use an up-to-date driver supporting CUDA 12.8 (Linux driver 570.26 or
+newer; see the [NVIDIA support matrix](https://docs.nvidia.com/deeplearning/cudnn/backend/v9.8.0/reference/support-matrix.html)).
+The environment supplies CUDA/cuDNN libraries as Python packages; do not
+install the Conda CUDA 11.2 stack below into it. Qt may also require your
+distribution's desktop libraries, including `libxcb-cursor` on X11.
+
+TensorFlow 2.21 reports PTX JIT compilation for Blackwell, so the first use
+of GPU kernels can take substantially longer than subsequent runs. This
+version was selected because TensorFlow 2.20 failed basic float GPU
+operations on an RTX 5090 with `CUDA_ERROR_INVALID_PTX`. TensorFlow 2.21
+and PyTorch 2.11/cu128 passed small convolution forward/backward checks
+in one process on that GPU with driver 595.91.07; full training and
+performance have not been validated.
+
+CODAvision enables legacy Keras and TensorFlow GPU memory growth before
+its package imports. For notebooks, import `base` before importing or using
+TensorFlow/Keras, or set `TF_USE_LEGACY_KERAS=1` before starting Python.
+Use `from tensorflow import keras` for CODAvision models and callbacks;
+the separate Keras 3 package is a TensorFlow dependency, not the API used
+by CODAvision. Memory growth avoids TensorFlow reserving all GPU memory
+at startup, but concurrent workloads still share the available VRAM.
+
+Final and best TensorFlow models retain HDF5 contents under their historical
+`.keras` filenames. Both save paths explicitly select HDF5: legacy Keras
+previously treated the best checkpoint's `.keras` suffix as HDF5 even when
+the caller requested `save_format='tf'`. Existing HDF5 checkpoints do not
+need conversion.
+
+The uv lock targets Linux only. Windows and macOS retain the Conda/pip
+installation paths below.
+
+### Conda installation
+
 ### Step 1: Install Miniconda
 
 Download and install Miniconda by following the instructions provided [here](https://docs.anaconda.com/miniconda/).
@@ -66,9 +123,15 @@ Download and install Miniconda by following the instructions provided [here](htt
 
 ### Step 2: Create and Activate CODAvision Environment
 
-**For Windows and Linux:**
+**For Windows:**
 ```bash
 conda create -n CODAvision python=3.9
+conda activate CODAvision
+```
+
+**For Linux:**
+```bash
+conda create -n CODAvision python=3.10
 conda activate CODAvision
 ```
 
@@ -83,7 +146,7 @@ conda activate CODAvision
 
 ### Step 3: Install CUDA Toolkit and cuDNN
 
-**For Windows and Linux only:**
+**For Windows only:**
 
 Ensure that CUDA drivers are installed as per the instructions [here](https://docs.nvidia.com/cuda/cuda-installation-guide-linux/index.html). Then, install the CUDA Toolkit and cuDNN:
 ```bash
@@ -92,6 +155,10 @@ conda install -c conda-forge cudatoolkit=11.2 cudnn=8.1.0
 
 **For macOS users:** Skip this step.
 
+**For Linux users:** Install a compatible NVIDIA driver as described in the
+uv section. The `gpu` extra below supplies CUDA/cuDNN packages; skip the
+Conda CUDA toolkit installation.
+
 ---
 
 ### Step 4: Install CODAvision
@@ -99,9 +166,14 @@ conda install -c conda-forge cudatoolkit=11.2 cudnn=8.1.0
 > ⚠️ **Note:**  
 > Ensure Git is installed. If not, download it from [here](https://git-scm.com/downloads).
 
-**For Windows and Linux:**
+**For Windows:**
 ```bash
 pip install -e git+https://github.com/Kiemen-Lab/CODAvision.git#egg=CODAvision
+```
+
+**For Linux:**
+```bash
+pip install -e "git+https://github.com/Kiemen-Lab/CODAvision.git#egg=CODAvision[gpu]" --extra-index-url https://download.pytorch.org/whl/cu128
 ```
 
 **For macOS:**
@@ -123,10 +195,17 @@ conda activate CODAvision
 > ```bash
 > git clone https://github.com/Kiemen-Lab/CODAvision.git
 > cd CODAvision
-> pip install -e .
+> pip install -e .  # Windows/macOS
+> ```
 
-> 💡 **PyTorch GPU Support (Optional):**
-> PyTorch is installed automatically with CPU support. For NVIDIA GPU acceleration with PyTorch, install CUDA-enabled PyTorch *before* installing CODAvision:
+For a local Linux checkout in a Conda environment, use:
+
+```bash
+pip install -e ".[gpu]" --extra-index-url https://download.pytorch.org/whl/cu128
+```
+
+> 💡 **Windows PyTorch GPU Support (Optional):**
+> For the legacy Windows installation, select CUDA-enabled PyTorch *before* installing CODAvision:
 > ```bash
 > pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
 > pip install -e .
@@ -189,4 +268,3 @@ The plugin architecture supports:
 For comprehensive guidance on annotation dataset creation, see the [CODAvision Protocol](https://www.nature.com/articles/s41596-026-01404-3).
 
 ---
-
