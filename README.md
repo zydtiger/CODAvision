@@ -12,12 +12,10 @@ CODAvision is an open-source Python package designed for semantic segmentation o
    - [Hardware](#️-hardware)
    - [Software](#-software)
 2. [Installation Guide](#️-2-installation-guide)
-   - [Linux with uv](#linux-with-uv)
-   - [Step 1: Install Miniconda](#-step-1-install-miniconda)
-   - [Step 2: Create and Activate CODAvision Environment](#-step-2-create-and-activate-codavision-environment)
-   - [Step 3: Install CUDA Toolkit and cuDNN](#-step-3-install-cuda-toolkit-and-cudnn)
-   - [Step 4: Install CODAvision](#-step-4-install-codavision)
-   - [Step 5: Launch CODAvision GUI](#️-step-5-launch-codavision-gui)
+   - [Install with uv](#install-with-uv)
+   - [Select a PyTorch backend](#select-a-pytorch-backend)
+   - [Conda and pip](#conda-and-pip)
+   - [Model compatibility](#model-compatibility)
 3. [Demo](#-3-demo)
    - [Sample Dataset](#-sample-dataset)
    - [Instructions to Run on Sample Data](#-instructions-to-run-on-sample-data)
@@ -34,7 +32,7 @@ CODAvision is an open-source Python package designed for semantic segmentation o
 - **Minimum Requirements:**
   - Computer with ≥16 GB RAM
   - NVIDIA GPU with ≥8 GB VRAM (Windows/Linux only)
-  - Operating System: Windows 10/11, macOS 11+, or Linux
+  - Operating System: Windows 10/11 or Linux
   - Storage: ≥2.5 GB free space
 
 - **Tested Configuration:**
@@ -59,167 +57,130 @@ CODAvision is an open-source Python package designed for semantic segmentation o
 
 ## ⚙️ 2. Installation Guide
 
-### Linux with uv
+### Install with uv
 
-The reproducible uv environment targets Linux x86_64 with Python 3.10.
-It runs TensorFlow and PyTorch in the same environment and GUI, using
-TensorFlow 2.21, legacy Keras 2 (`tf-keras`), PyTorch 2.11/torchvision 0.26
-with CUDA 12.8, and NumPy 1.26.4. Framework selection and model checkpoint
-detection follow the existing CODAvision configuration.
+The modern environment supports Python 3.10–3.11 on Linux x86_64 and native
+Windows x86_64. `.python-version` selects Python 3.10 by default. The shared
+stack uses TensorFlow/tf-keras 2.21, PyTorch 2.11, torchvision 0.26, and
+NumPy 1.26.x. Python 3.12+ requires a newer PySide6 release and is not yet
+included in this setup.
 
-Install [uv](https://docs.astral.sh/uv/getting-started/installation/), then
-run these commands from your CODAvision checkout:
+| Platform | TensorFlow | PyTorch wheel | Installation |
+| --- | --- | --- | --- |
+| Linux / Windows WSL2 | NVIDIA GPU | CUDA 12.8 | Locked cu128 environment below |
+| Native Windows | CPU | CUDA 12.8 | Same locked cu128 environment |
+| CPU-only Linux / Windows | CPU | CPU | Explicit `cpu` backend below |
 
-```bash
+[TensorFlow stopped native Windows CUDA support after 2.10](https://www.tensorflow.org/install/pip#windows-native).
+Use WSL2 with GPU access and WSLg for the GUI when both frameworks need GPU
+acceleration on Windows. The modern native Windows route replaces the old
+TensorFlow 2.10 / Conda CUDA 11.2 installation; keep an existing legacy
+environment separate if you still need it.
+
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/), clone
+CODAvision, and run from the checkout (use PowerShell on Windows):
+
+```sh
 uv sync --locked --extra gpu
 uv run --locked --extra gpu CODAvision
 ```
 
-uv creates a local `.venv`, installs Python if needed, and selects the
-PyTorch cu128 wheel index declared in `pyproject.toml`. Keep `--extra gpu`
-on both commands so TensorFlow's CUDA dependencies remain installed. Avoid
-mixing manual pip installations into this environment; uv synchronizes it
-to `uv.lock`.
+uv creates `.venv`, obtains Python if needed, and installs the locked
+dependencies. Project index configuration selects PyTorch cu128 wheels on
+both Linux and Windows. The `gpu` extra adds TensorFlow's CUDA packages on
+Linux/WSL2; it does not enable TensorFlow GPU on native Windows. Keep the
+extra on subsequent synchronizing `uv run` commands. To select Python 3.11,
+pass `--python 3.11` to both commands.
 
-A working NVIDIA driver and desktop display are required. For Blackwell
-GPUs, use an up-to-date driver supporting CUDA 12.8 (Linux driver 570.26 or
-newer; see the [NVIDIA support matrix](https://docs.nvidia.com/deeplearning/cudnn/backend/v9.8.0/reference/support-matrix.html)).
-The environment supplies CUDA/cuDNN libraries as Python packages; do not
-install the Conda CUDA 11.2 stack below into it. Qt may also require your
-distribution's desktop libraries, including `libxcb-cursor` on X11.
+A compatible NVIDIA driver and desktop display are required for this GPU
+route. CUDA/cuDNN runtime packages come from the Python environment; do not
+install the old Conda CUDA toolkit into it. On Linux, Qt may also require
+distribution desktop libraries such as `libxcb-cursor` on X11. The OpenCV
+dependency is headless because CODAvision displays windows through PySide6;
+install only one OpenCV distribution providing the `cv2` namespace.
 
-TensorFlow 2.21 reports PTX JIT compilation for Blackwell, so the first use
-of GPU kernels can take substantially longer than subsequent runs. This
-version was selected because TensorFlow 2.20 failed basic float GPU
-operations on an RTX 5090 with `CUDA_ERROR_INVALID_PTX`. TensorFlow 2.21
-and PyTorch 2.11/cu128 passed small convolution forward/backward checks
-in one process on that GPU with driver 595.91.07; full training and
-performance have not been validated.
+The Linux Python 3.10 environment passed small TensorFlow/PyTorch convolution
+forward/backward checks in one process on an RTX 5090 with driver 595.91.07,
+plus headless GUI and checkpoint save/load checks. Windows and Python 3.11
+are included in dependency resolution; their GUI/GPU execution is not yet
+validated. Full training and performance have not been validated.
 
-CODAvision enables legacy Keras and TensorFlow GPU memory growth before
-its package imports. For notebooks, import `base` before importing or using
-TensorFlow/Keras, or set `TF_USE_LEGACY_KERAS=1` before starting Python.
-Use `from tensorflow import keras` for CODAvision models and callbacks;
-the separate Keras 3 package is a TensorFlow dependency, not the API used
-by CODAvision. Memory growth avoids TensorFlow reserving all GPU memory
-at startup, but concurrent workloads still share the available VRAM.
+TensorFlow 2.21 reports PTX JIT compilation on Blackwell, so initial GPU
+kernel use can be slow. TensorFlow 2.20 failed float GPU operations on the
+tested RTX 5090 with `CUDA_ERROR_INVALID_PTX`, which is why this environment
+uses 2.21.
 
-Final and best TensorFlow models retain HDF5 contents under their historical
-`.keras` filenames. Both save paths explicitly select HDF5: legacy Keras
-previously treated the best checkpoint's `.keras` suffix as HDF5 even when
-the caller requested `save_format='tf'`. Existing HDF5 checkpoints do not
-need conversion.
+### Select a PyTorch backend
 
-The uv lock targets Linux only. Windows and macOS retain the Conda/pip
-installation paths below.
+Package version requirements do not contain CUDA suffixes. For an installation
+chosen for the current machine rather than the project lock, use uv's pip
+interface (examples use uv 0.10.10). Start with a fresh virtual environment;
+do not mix these installation routes in one environment:
 
-### Conda installation
+```sh
+uv venv --python 3.10
 
-### Step 1: Install Miniconda
+# Linux/WSL2: shared, tested CUDA backend for TensorFlow and PyTorch.
+uv pip install --no-sources --torch-backend=cu128 -e '.[gpu]'
 
-Download and install Miniconda by following the instructions provided [here](https://docs.anaconda.com/miniconda/).
+# Native Windows: auto-select the PyTorch backend (GPU or CPU); TensorFlow is CPU.
+uv pip install --no-sources --torch-backend=auto -e .
 
----
+# CPU-only machine: explicitly select CPU PyTorch wheels.
+uv pip install --no-sources --torch-backend=cpu -e .
 
-### Step 2: Create and Activate CODAvision Environment
+# Run the environment created by the chosen install command above.
+uv run --no-sync CODAvision
+```
 
-**For Windows:**
-```bash
-conda create -n CODAvision python=3.9
+Choose one install command for the intended environment. `--no-sources`
+ignores this project's fixed PyTorch index mapping. `--torch-backend` selects
+the index for PyTorch packages, including transitive dependencies; it does
+not select a TensorFlow backend. `auto` inspects the local hardware/driver
+and may select a different CUDA release or CPU. It does not negotiate a
+shared CUDA/cuDNN stack with TensorFlow, nor switch backends to solve an
+incompatible Python or package constraint. For Linux dual-framework GPU
+use, select `cu128` explicitly.
+
+These pip installations do not use or update `uv.lock`. In uv 0.10.10,
+`--torch-backend` is not available on `uv sync`. A later `uv sync` or
+synchronizing `uv run` can replace the selected backend; use `--no-sync`
+for the manually selected environment. `UV_TORCH_BACKEND` is the equivalent
+environment variable. See the [uv PyTorch guide](https://docs.astral.sh/uv/guides/integration/pytorch/).
+The old `pytorch-cuda118`, `pytorch-cuda121`, `pytorch-cuda124`,
+`pytorch-cuda`, and `pytorch-cpu` extras have been removed: they did not
+actually select wheel indexes.
+
+### Conda and pip
+
+Conda remains an option for managing Python on Linux and Windows. From the
+checkout, use a new environment:
+
+```sh
+conda create -n CODAvision python=3.10 pip
 conda activate CODAvision
+python -m pip install -e '.[gpu]' --extra-index-url https://download.pytorch.org/whl/cu128
+CODAvision
 ```
 
-**For Linux:**
-```bash
-conda create -n CODAvision python=3.10
-conda activate CODAvision
-```
+The extra index supplies the matching CUDA 12.8 PyTorch wheels. Unlike the
+uv lock, pip resolves dependencies at installation time. Native Windows
+still runs TensorFlow on CPU.
 
-**For macOS:**
+### Model compatibility
 
-- **Apple Silicon with GPU support (M1/M2/M3/M4)** — requires Python 3.10+:
-```bash
-conda create -n CODAvision python=3.10
-conda activate CODAvision
-```
----
+CODAvision enables legacy Keras and TensorFlow GPU memory growth before its
+package imports. In notebooks, import `base` before TensorFlow/Keras, or set
+`TF_USE_LEGACY_KERAS=1` before starting Python. Use `from tensorflow import
+keras` for models and callbacks; TensorFlow's separate Keras 3 dependency
+is not CODAvision's model API. Memory growth avoids reserving all GPU memory
+at startup; concurrent workloads still share available VRAM.
 
-### Step 3: Install CUDA Toolkit and cuDNN
-
-**For Windows only:**
-
-Ensure that CUDA drivers are installed as per the instructions [here](https://docs.nvidia.com/cuda/cuda-installation-guide-linux/index.html). Then, install the CUDA Toolkit and cuDNN:
-```bash
-conda install -c conda-forge cudatoolkit=11.2 cudnn=8.1.0
-```
-
-**For macOS users:** Skip this step.
-
-**For Linux users:** Install a compatible NVIDIA driver as described in the
-uv section. The `gpu` extra below supplies CUDA/cuDNN packages; skip the
-Conda CUDA toolkit installation.
-
----
-
-### Step 4: Install CODAvision
-
-> ⚠️ **Note:**  
-> Ensure Git is installed. If not, download it from [here](https://git-scm.com/downloads).
-
-**For Windows:**
-```bash
-pip install -e git+https://github.com/Kiemen-Lab/CODAvision.git#egg=CODAvision
-```
-
-**For Linux:**
-```bash
-pip install -e "git+https://github.com/Kiemen-Lab/CODAvision.git#egg=CODAvision[gpu]" --extra-index-url https://download.pytorch.org/whl/cu128
-```
-
-**For macOS:**
-
-- **Apple Silicon with GPU acceleration (M1/M2/M3/M4):**
-```bash
-pip install -e "git+https://github.com/Kiemen-Lab/CODAvision.git#egg=CODAvision[macos-silicon]"
-```
-
-This installs `tensorflow-macos`, `tensorflow-metal`, and other dependencies. Do not install `keras` separately (it's included).
-
-After installation, restart your IDE and reactivate the environment:
-```bash
-conda activate CODAvision
-```
-
->💡 **Alternative installation option:**
-> You can also clone the repository first and install dependencies locally:  
-> ```bash
-> git clone https://github.com/Kiemen-Lab/CODAvision.git
-> cd CODAvision
-> pip install -e .  # Windows/macOS
-> ```
-
-For a local Linux checkout in a Conda environment, use:
-
-```bash
-pip install -e ".[gpu]" --extra-index-url https://download.pytorch.org/whl/cu128
-```
-
-> 💡 **Windows PyTorch GPU Support (Optional):**
-> For the legacy Windows installation, select CUDA-enabled PyTorch *before* installing CODAvision:
-> ```bash
-> pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
-> pip install -e .
-> ```
----
-
-### 🖼️ Step 5: Launch CODAvision GUI
-
-After completing the installation, run the following command to launch the GUI:
-```bash
-python CODAvision.py
-```
-
-**⏱️ Typical Installation Time:** Approximately 10–15 minutes on a standard desktop computer.
+Best and final TensorFlow checkpoints keep their historical `.keras` names
+and HDF5 contents. Both save paths explicitly select HDF5; legacy Keras
+previously interpreted the best checkpoint's suffix as HDF5 even when the
+caller requested `save_format='tf'`. Existing HDF5 checkpoints need no
+conversion.
 
 ---
 
