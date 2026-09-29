@@ -156,11 +156,8 @@ def print_status_summary(
         print("\nStatus: No NVIDIA GPU detected")
         print("-" * 60)
         print("\nYour system does not have an NVIDIA GPU or CUDA drivers.")
-        print("CODAvision will use CPU for computations.")
-        print("\nTo install CODAvision with CPU-only PyTorch:")
-        print("  uv pip install --no-sources --torch-backend=cpu -e .")
-        print("Use a fresh environment; see README.md for setup and launch commands.")
-        print("\nNote: Training will be significantly slower on CPU.")
+        print("The supported CODAvision model workflows require an NVIDIA GPU.")
+        print("Check the GPU and driver before following the README installation guide.")
 
     elif torch_installed and torch_has_cuda:
         print("\nStatus: GPU support is working! ✓")
@@ -203,7 +200,9 @@ def print_status_summary(
         print("The NVIDIA driver must support CUDA 12.8; see README.md for requirements.")
         print("For alternative backends, see README.md (Select a PyTorch backend).")
     if platform.system() == "Windows":
-        print("Native Windows runs modern TensorFlow on CPU; use WSL2 for TF CUDA.")
+        print("Native Windows requires Python 3.10, TensorFlow 2.10.1, and CUDA 11.2/cuDNN 8.1.")
+        print("Install the legacy TensorFlow runtime separately; see README.md (Native Windows GPU).")
+        print("PyTorch continues to use its own CUDA 12.8 wheels.")
 
     # Troubleshooting
     print("\n" + "="*60)

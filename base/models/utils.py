@@ -344,9 +344,8 @@ def setup_gpu() -> Dict[str, Any]:
                 if tf_ver > (2, 10):
                     logger.warning(
                         "TensorFlow %s does not support GPU on native Windows. "
-                        "CPU execution is expected with this environment. "
-                        "For TensorFlow GPU support, use WSL2 and follow the "
-                        "README installation instructions.",
+                        "Use the native Windows TensorFlow 2.10 environment "
+                        "with CUDA 11.2/cuDNN 8.1 documented in README.md.",
                         tf.__version__
                     )
                 else:

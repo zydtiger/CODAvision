@@ -28,17 +28,9 @@ classifiers = [
 keywords = ["medical imaging", "image labeling", "machine learning", "deep learning", "tissue labeling"]
 
 dependencies = [
-    # Shared modern stack on Linux and Windows.
+    # Shared numerical requirements on Linux and native Windows.
     "numpy>=1.26,<2",
     "pillow==10.4.0",
-
-    # TensorFlow CUDA is supported on Linux/WSL2; native Windows uses CPU.
-    "tensorflow==2.21.0",
-    "tf-keras==2.21.0",
-
-    # Versions are independent of wheel backends. uv sources below select cu128.
-    "torch==2.11.0",
-    "torchvision==0.26.0",
 
     # PySide6 owns the GUI; share one cv2 provider with inference libraries.
     "opencv-python-headless==4.10.0.84",
@@ -90,13 +82,26 @@ dependencies = [
 requires-python = ">=3.10,<3.12"
 
 [project.optional-dependencies]
-# Adds TensorFlow CUDA libraries on Linux/WSL2. PyTorch wheels use uv sources.
+# Required application runtime: install CODAvision[gpu] on both platforms.
+# Base dependencies alone do not provide the model frameworks needed at startup.
 gpu = [
+    # PyTorch on Linux and Windows. uv sources below select cu128 wheels.
+    "torch==2.11.0",
+    "torchvision==0.26.0",
+
+    # Linux: TensorFlow supplies CUDA 12 libraries and uses legacy Keras.
     "tensorflow[and-cuda]==2.21.0; sys_platform == 'linux'",
+    "tf-keras==2.21.0; sys_platform == 'linux'",
+
+    # Native Windows: Python 3.10 with external CUDA 11.2/cuDNN 8.1.
+    "tensorflow==2.10.1; sys_platform == 'win32'",
+    "keras==2.10.0; sys_platform == 'win32'",
+    # 0.31 is the last release providing native Windows filesystem wheels.
+    "tensorflow-io-gcs-filesystem<0.32; sys_platform == 'win32'",
 ]
 
 # Development dependencies (includes all test and code quality tools)
-# Install with: pip install -e ".[dev]"
+# Install with: uv sync --extra gpu --extra dev
 dev = [
     # Testing framework
     "pytest>=7.4.0",
@@ -131,7 +136,7 @@ dev = [
 ]
 
 # Minimal testing dependencies (for CI pipelines)
-# Install with: pip install -e ".[test]"
+# Install with: uv sync --extra gpu --extra test
 test = [
     "pytest>=7.4.0",
     "pytest-cov>=4.1.0",
@@ -152,7 +157,7 @@ include = ["/CODAvision.py", "/base", "/gui"]
 [tool.uv]
 environments = [
     "sys_platform == 'linux' and platform_machine == 'x86_64'",
-    "sys_platform == 'win32' and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+    "sys_platform == 'win32' and (platform_machine == 'AMD64' or platform_machine == 'x86_64') and python_version == '3.10'",
 ]
 
 [[tool.uv.index]]

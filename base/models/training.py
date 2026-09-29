@@ -1081,9 +1081,10 @@ class DeepLabV3PlusTrainer(SegmentationModelTrainer):
                     global_clipnorm=1.0,
                 )
             else:
+                # The experimental namespace also supports native Windows TF 2.10.
                 # AdamW provides weight decay (different from L2 regularization)
                 # weight_decay is typically similar to L2 regularization weight
-                optimizer = tf.keras.optimizers.AdamW(
+                optimizer = tf.keras.optimizers.experimental.AdamW(
                     learning_rate=self.learning_rate,
                     weight_decay=self.l2_regularization_weight,
                     epsilon=self.optimizer_epsilon,
@@ -1186,8 +1187,9 @@ class UNetTrainer(SegmentationModelTrainer):
                     global_clipnorm=1.0,
                 )
             else:
+                # The experimental namespace also supports native Windows TF 2.10.
                 # AdamW provides weight decay (different from L2 regularization)
-                optimizer = tf.keras.optimizers.AdamW(
+                optimizer = tf.keras.optimizers.experimental.AdamW(
                     learning_rate=learning_rate,
                     weight_decay=self.l2_regularization_weight,
                     epsilon=self.optimizer_epsilon,
