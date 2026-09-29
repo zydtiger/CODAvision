@@ -93,7 +93,8 @@ gpu = [
     "tensorflow[and-cuda]==2.21.0; sys_platform == 'linux'",
     "tf-keras==2.21.0; sys_platform == 'linux'",
 
-    # Native Windows: Python 3.10 with external CUDA 11.2/cuDNN 8.1.
+    # Native Windows: environment-windows.yml supplies CUDA 11.2/cuDNN 8.1.
+    # Trainer AdamW disables XLA JIT on Windows; no CUDA compiler is needed.
     "tensorflow==2.10.1; sys_platform == 'win32'",
     "keras==2.10.0; sys_platform == 'win32'",
     # 0.31 is the last release providing native Windows filesystem wheels.
@@ -155,6 +156,7 @@ allow-direct-references = true
 include = ["/CODAvision.py", "/base", "/gui"]
 
 [tool.uv]
+required-version = ">=0.10.10"
 environments = [
     "sys_platform == 'linux' and platform_machine == 'x86_64'",
     "sys_platform == 'win32' and (platform_machine == 'AMD64' or platform_machine == 'x86_64') and python_version == '3.10'",

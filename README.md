@@ -134,17 +134,57 @@ libraries, and uv to install Python packages. In an initialized Conda
 PowerShell, from the checkout:
 
 ```powershell
-conda create -n CODAvision -c conda-forge python=3.10 pip cudatoolkit=11.2 cudnn=8.1.0
-conda activate CODAvision
-uv pip install --python "$env:CONDA_PREFIX\python.exe" --no-sources --torch-backend=cu128 -e ".[gpu]"
-CODAvision
+$ErrorActionPreference = "Stop"
+nvidia-smi
+if ($LASTEXITCODE -ne 0) { throw "NVIDIA driver check failed." }
+
+# Use a fresh environment name. This installs uv 0.10.10 as well.
+conda env create -n codavision-gpu -f environment-windows.yml
+if ($LASTEXITCODE -ne 0) { throw "Conda environment creation failed." }
+conda activate codavision-gpu
+if ($LASTEXITCODE -ne 0) { throw "Conda activation failed." }
+
+uv sync --python "$env:CONDA_PREFIX\python.exe" --locked --extra gpu
+if ($LASTEXITCODE -ne 0) { throw "Locked dependency installation failed." }
+
+# Requires both frameworks to execute on GPU, including both trainer AdamW paths.
+uv run --locked --extra gpu python scripts/verify_gpu_runtime.py
+if ($LASTEXITCODE -ne 0) { throw "GPU verification failed; preserve the error output." }
+
+uv run --locked --extra gpu CODAvision
 ```
 
-This installs into the Conda environment and does not use `uv.lock`.
-Activation makes Conda's `Library\bin` available to TensorFlow. Keep the
+Conda supplies Python 3.10, CUDA 11.2.2, and cuDNN 8.1.0.77. uv installs
+application packages into the checkout's `.venv` using `uv.lock`; keep Conda
+activated for every launch, including `uv run`. Activation makes Conda's
+`Library\bin` available to TensorFlow. Keep the
 current NVIDIA display driver; these runtime libraries do not replace it.
 Do not copy CUDA or cuDNN DLLs into `System32` or replace the DLLs bundled
 with PyTorch.
+
+CODAvision disables AdamW optimizer JIT compilation on native Windows.
+TensorFlow 2.10 enables it by default, but the Conda runtime does not provide
+the XLA compiler toolchain: an unmodified AdamW GPU update fails looking for
+`libdevice.10.bc`, then `ptxas.exe` if only the libdevice path is corrected.
+`jit_compile=False` keeps the optimizer on GPU without requiring those tools.
+Linux retains optimizer JIT compilation. Custom Windows AdamW code must also
+pass `jit_compile=False`; no `XLA_FLAGS` or DLL copying is needed.
+TensorFlow may still log a missing `ptxas.exe` warning while tuning convolutions
+and then use the driver's PTX compiler. This fallback passed the GPU checks;
+the verification script must finish with all `PASS` messages.
+
+To run the opt-in Windows regression through pytest:
+
+```powershell
+$env:CODAVISION_TEST_GPU = "1"
+uv run --locked --extra gpu --extra test pytest tests/integration/test_windows_gpu_runtime.py
+```
+
+If capturing native command output in Windows PowerShell 5.1, redirecting
+stderr with `$ErrorActionPreference = "Stop"` can turn ordinary progress
+output into a terminating error. Use `Start-Process` with separate
+`-RedirectStandardOutput` and `-RedirectStandardError` files, or use
+`"Continue"` while capturing output and explicitly check `$LASTEXITCODE`.
 
 To use uv without Conda, first install the CUDA 11.2 toolkit and cuDNN 8.1
 from the NVIDIA archives linked in the TensorFlow guide. Make their `bin`
@@ -157,11 +197,15 @@ uv sync --python 3.10 --locked --extra gpu
 uv run --python 3.10 --locked --extra gpu CODAvision
 ```
 
-The Windows Python 3.10 dependency set resolves with TensorFlow 2.10.1,
-Keras 2.10, NumPy 1.26.4, protobuf 3.19.6, and PyTorch 2.11/cu128. Native
-Windows GUI/GPU execution and coexistence of both CUDA library families
-still require verification on the target RTX 20–40 series machine. In
-particular, RTX 40-series operation relies on compatibility with older
+The Windows Python 3.10 dependency set installs TensorFlow 2.10.1,
+Keras 2.10, NumPy 1.26.4, protobuf 3.19.6, and PyTorch 2.11/cu128.
+On an RTX 4090 with driver 591.74, the locked stack passed same-process GPU
+convolution and gradient checks, both trainers' AdamW updates and graph-mode
+training, and small DeepLabV3+ inference/checkpoint reload checks in both
+frameworks. The GUI process opened a native window; interactive GUI workflows
+and full training runs have not been validated. The inference checks used
+synthetic input and untrained segmentation heads, so they do not establish
+prediction accuracy. RTX 40-series operation relies on compatibility with older
 CUDA kernels; the [NVIDIA Ada compatibility guide](https://docs.nvidia.com/cuda/ada-compatibility-guide/index.html)
 describes the binary/PTX requirements. This legacy TensorFlow profile does
 not establish Blackwell support. If TensorFlow reports no GPU, check the

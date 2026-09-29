@@ -1089,6 +1089,8 @@ class DeepLabV3PlusTrainer(SegmentationModelTrainer):
                     weight_decay=self.l2_regularization_weight,
                     epsilon=self.optimizer_epsilon,
                     global_clipnorm=1.0,
+                    # Conda's Windows CUDA runtime lacks the XLA compiler tools.
+                    jit_compile=platform.system() != 'Windows',
                 )
         else:
             # Regular Adam optimizer (L2 regularization handled by kernel_regularizer)
@@ -1194,6 +1196,8 @@ class UNetTrainer(SegmentationModelTrainer):
                     weight_decay=self.l2_regularization_weight,
                     epsilon=self.optimizer_epsilon,
                     global_clipnorm=1.0,
+                    # Conda's Windows CUDA runtime lacks the XLA compiler tools.
+                    jit_compile=platform.system() != 'Windows',
                 )
         else:
             # Regular Adam optimizer (L2 regularization handled by kernel_regularizer)
