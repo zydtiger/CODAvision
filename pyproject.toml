@@ -54,7 +54,12 @@ dependencies = [
     # Or use: python scripts/check_cuda_version.py for guided installation
     "torch==2.11.0",
     "torchvision==0.26.0",
-    "tisam[train,inference]",
+    "tisam[train,inference] @ git+https://github.com/Kiemen-Lab/tisam.git@4211b7170c4cfddd86fc14f70d78339c908f54a7",
+    # Native Windows TF 2.10 and TensorBoardX must share protobuf 3.19.
+    "protobuf>=3.9.2,<3.20; sys_platform == 'win32'",
+    "tensorboardx==2.6; sys_platform == 'win32'",
+    # TF 2.21 (from the dependency modernization PR) requires protobuf >=6.31.1.
+    "protobuf>=6.31.1,<8; sys_platform != 'win32'",
 
     # PySide6 owns the GUI; share one cv2 provider with inference libraries.
     "opencv-python-headless==4.10.0.84",
@@ -174,7 +179,6 @@ url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
 [tool.uv.sources]
-tisam = { git = "https://github.com/Kiemen-Lab/tisam.git" }
 torch = [{ index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" }]
 torchvision = [{ index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" }]
 

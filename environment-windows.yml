@@ -10,3 +10,5 @@ dependencies:
   - cudnn=8.1.0.77
   - pip:
       - uv==0.10.10
+      - protobuf>=3.9.2,<3.20
+      - tensorboardx==2.6
