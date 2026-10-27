@@ -13,7 +13,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QFont, QPixmap, QPainter, QIcon
 from PySide6.QtWidgets import (
     QWidget, QGroupBox, QLabel, QPushButton, QLineEdit,
-    QComboBox, QSpinBox, QTabWidget, QCheckBox,
+    QPlainTextEdit, QComboBox, QSpinBox, QTabWidget, QCheckBox,
     QTableWidget, QHeaderView, QStatusBar, QGraphicsScene,
     QGraphicsView, QDialog, QProgressBar, QVBoxLayout,
     QMessageBox, QGraphicsPixmapItem, QListWidget, QGridLayout, QHBoxLayout, QSpacerItem, QSizePolicy, QTableView
@@ -533,8 +533,10 @@ class Ui_MainWindow:
         self.model_name_label.setObjectName(u"model_name_label")
         self.horizontalLayout_15.addWidget(self.model_name_label)
         self.model_type_CB = QComboBox(self.tab_4)
-        self.model_type_CB.addItem("DeepLabV3_plus")
-        self.model_type_CB.addItem("UNet")
+        from base.config import ModelDefaults
+        self.model_type_CB.addItems(list(dict.fromkeys(
+            ModelDefaults.TENSORFLOW_MODELS + ModelDefaults.PYTORCH_MODELS
+        )))
         self.model_type_CB.setObjectName(u"model_type_CB")
         self.horizontalLayout_15.addWidget(self.model_type_CB)
         self.verticalLayout_10.addLayout(self.horizontalLayout_15)
@@ -554,6 +556,20 @@ class Ui_MainWindow:
         self.batch_size_SB.setObjectName(u"batch_size_SB")
         self.horizontalLayout_16.addWidget(self.batch_size_SB)
         self.verticalLayout_10.addLayout(self.horizontalLayout_16)
+
+        self.tisam_options = QPlainTextEdit(self.tab_4)
+        self.tisam_options.setPlaceholderText(
+            "Optional TiSAM settings (YAML):\n"
+            "model:\n  extra_encoder: hf-hub:MahmoodLab/UNI2-h\n"
+            "training:\n  epochs: 100\n  accumulation_steps: 16\n"
+            "  sam3_checkpoint: /path/to/sam3.pt"
+        )
+        self.tisam_options.setMaximumHeight(150)
+        self.tisam_options.setVisible(False)
+        self.model_type_CB.currentTextChanged.connect(
+            lambda name: self.tisam_options.setVisible(name == "TiSAM")
+        )
+        self.verticalLayout_10.addWidget(self.tisam_options)
 
         self.gridLayout_9.addLayout(self.verticalLayout_10, 0, 0, 1, 1)
 

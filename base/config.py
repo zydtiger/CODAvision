@@ -75,7 +75,7 @@ class ModelDefaults:
 
     # Model availability matrix
     TENSORFLOW_MODELS = ["DeepLabV3_plus", "UNet"]
-    PYTORCH_MODELS = ["DeepLabV3_plus"]  # Start with DeepLabV3+
+    PYTORCH_MODELS = ["DeepLabV3_plus", "TiSAM"]
 
 
 class LoggingConfig:

@@ -1319,6 +1319,11 @@ def train_segmentation_model_cnns(
         if '+' in model_type:
             model_type = model_type.replace('+', '_plus')
 
+        if model_type == "TiSAM":
+            from base.models.backbones_tisam import train_tisam
+            train_tisam(pthDL, retrain_model=retrain_model, seed=seed)
+            return
+
         if model_type not in ["DeepLabV3_plus", "UNet"]:
             raise ValueError(
                 f"Unsupported model type: {model_type}. "

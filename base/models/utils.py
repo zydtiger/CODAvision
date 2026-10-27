@@ -434,6 +434,8 @@ def get_model_paths(model_path: str, model_type: str, framework: str = None) -> 
 
     # Set file extension based on framework
     ext = '.pth' if framework.lower() == 'pytorch' else '.keras'
+    if model_type == 'TiSAM':
+        ext = '.safetensors'
 
     return {
         'best_model': os.path.join(model_path, f'best_model_{model_type}{ext}'),

@@ -98,6 +98,7 @@ class ImageClassifier:
         try:
             # Use the model utils to load metadata
             data = load_model_metadata(self.model_path)
+            self.model_data = data
 
             # Extract needed parameters
             self.class_names = data.get('classNames')
@@ -205,6 +206,16 @@ class ImageClassifier:
             ValueError: If model loading fails
         """
         try:
+            if self.model_type == "TiSAM":
+                from base.models.backbones import model_call
+                from base.models.backbones_tisam import options_from_metadata
+                model = model_call(
+                    "TiSAM", self.image_size, len(self.class_names),
+                    model_options=options_from_metadata(self.model_data),
+                )
+                model.load(os.path.join(self.model_path, "best_model_TiSAM.safetensors"))
+                return model
+
             model_path, is_pytorch = self._resolve_checkpoint()
 
             logger.info(f"Loading {'PyTorch' if is_pytorch else 'TensorFlow'} model from {model_path}")

@@ -27,7 +27,8 @@ def model_call(
     NUM_CLASSES: int,
     l2_regularization_weight: float = 0,
     framework: str = None,
-    wrap_with_adapter: bool = True
+    wrap_with_adapter: bool = True,
+    model_options: dict = None
 ) -> Any:
     """
     Factory function to create a segmentation model.
@@ -50,6 +51,17 @@ def model_call(
         ValueError: If model name or framework is invalid
         ImportError: If requested framework is not available
     """
+    # TiSAM is PyTorch-only, independently of the default CNN framework.
+    if name == "TiSAM":
+        if framework is not None and framework.lower() != "pytorch":
+            raise ValueError("TiSAM requires the pytorch framework")
+        from base.models.backbones_tisam import TiSAMSegmentationModel
+        builder = TiSAMSegmentationModel(
+            IMAGE_SIZE, NUM_CLASSES, l2_regularization_weight,
+            options=model_options,
+        )
+        return builder if wrap_with_adapter else builder.build_model()
+
     # Determine framework
     if framework is None:
         config = get_framework_config()
