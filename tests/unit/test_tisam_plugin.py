@@ -36,8 +36,9 @@ def test_native_tiles_keep_class_ids_and_nesting(tmp_path):
     assert config.data.class_names == ["void", "tumor", "whitespace"]
     source = config.data.train[0]
     assert source.path == tmp_path / "training"
-    assert source.metadata.label_to_class_name == ["void", "tumor", "whitespace", "void"]
-    assert source.metadata.supervision_ignored_raw_labels == [0]
+    assert source.metadata.label_to_class_name == ["tumor", "whitespace", "void"]
+    assert source.metadata.supervision_ignored_raw_labels == []
+    assert source.metadata.metric_ignored_raw_labels == [2]
     assert config.model.num_classes == 2
     assert config.batch_size == 2
 
@@ -118,3 +119,35 @@ def test_training_dispatch_and_checkpoint_publication(tmp_path, monkeypatch):
     assert (tmp_path / "best_model_TiSAM.safetensors").read_bytes() == b"test-checkpoint"
     train_segmentation_model_cnns(str(tmp_path))
     assert len(calls) == 1
+
+
+def test_native_loader_reads_zero_based_codavision_tiles(tmp_path):
+    import tifffile
+    from tisam.data.tile_dataset import get_tile_loaders
+    # base/data/tiles.py writes semantic classes 0..N-2, with black at N-1.
+    raw = np.tile(np.array([0, 1, 2], dtype=np.uint8), (3, 1))
+    for split in ("training", "validation"):
+        (tmp_path / split / "im").mkdir(parents=True)
+        (tmp_path / split / "label").mkdir()
+        tifffile.imwrite(tmp_path / split / "im" / "sample.tif",
+                         np.full((3, 3, 3), 255, dtype=np.uint8))
+        tifffile.imwrite(tmp_path / split / "label" / "sample.tif", raw)
+    config = native_config(
+        {"sxy": 3, "classNames": ["tumor", "whitespace", "black"], "batch_size": 1},
+        {"training": {"device": "cpu"}}, tmp_path,
+    )
+    _, validation = get_tile_loaders(config)
+    images, target, metric_valid = next(iter(validation))
+    np.testing.assert_array_equal(target[0], np.tile([1, 2, 0], (3, 1)))
+    np.testing.assert_array_equal(metric_valid[0], np.tile([True, True, False], (3, 1)))
+    adapter = model_call("TiSAM", 3, 3, model_options={"training": {"device": "cpu"}})
+    class Native(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.anchor = torch.nn.Parameter(torch.zeros(1))
+        def forward(self, pixels):
+            torch.testing.assert_close(pixels, images)
+            return torch.nn.functional.one_hot(target, 3).permute(0, 3, 1, 2).float()
+    adapter.model = Native()
+    prediction = adapter.predict(np.full((1, 3, 3, 3), 255, dtype=np.float32)).argmax(-1)
+    np.testing.assert_array_equal(prediction[0], raw)

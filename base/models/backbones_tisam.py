@@ -61,15 +61,15 @@ def native_config(metadata, options, model_path=None):
     if model_path is not None:
         root = Path(model_path).resolve()
         payload.update(out_dir=str(root), name="tisam-training")
-        # CODAvision stores masks as 1..N, with black at N and 0 unannotated.
-        labels = ["void", *names[:-1], "void"]
+        # Tile generation converts annotations to zero-based classes; black is last.
+        labels = [*names[:-1], "void"]
         for split, folder in (("train", "training"), ("validation", "validation")):
             payload["data"][split] = [{
                 "path": str(root / folder),
                 "metadata": {
                     "name": "codavision", "label_to_class_name": labels,
-                    "supervision_ignored_raw_labels": [0],
-                    "metric_ignored_raw_labels": [0, len(names)],
+                    "supervision_ignored_raw_labels": [],
+                    "metric_ignored_raw_labels": [len(names) - 1],
                     "train_void_canvas_policy": "preserve",
                 },
             }]
