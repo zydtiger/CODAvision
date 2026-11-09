@@ -140,6 +140,98 @@ class TiSAMSegmentationModel(BaseSegmentationModelInterface):
     load_weights = load
 
 
+class TiSAMProgress:
+    """Report native TiSAM training progress like the CNN trainers do.
+
+    TiSAM only writes progress to its own event files, so this polls the TensorBoard
+    scalars of the newest execution and reports them through CODAvision's logger
+    (console and logs/training_log_*.log). It never interferes with training.
+    """
+
+    def __init__(self, run_dir, logger, epochs, batch_size, accumulation_steps, interval=60.0):
+        import threading
+
+        self.run_dir = Path(run_dir)
+        self.logger = logger
+        self.epochs = epochs
+        self.interval = interval
+        self.logger.info(
+            f"Starting TiSAM training: {epochs} epochs, batch size {batch_size}, "
+            f"accumulation steps {accumulation_steps} (progress every {int(interval)} s)"
+        )
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="tisam-progress", daemon=True)
+        self._directory = self._accumulator = None
+        self._epochs_reported = self._last_step = 0
+        self._last_wall_time = None
+
+    def start(self):
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+        self._thread.join()
+        self._poll()
+
+    def _run(self):
+        while not self._stop.wait(self.interval):
+            self._poll()
+
+    def _poll(self):
+        try:
+            self._report()
+        except Exception as error:  # progress output must never stop training
+            self.logger.debug(f"TiSAM progress unavailable: {error}")
+
+    def _report(self):
+        from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+
+        directories = sorted(self.run_dir.glob("logs/executions/*/tensorboard"))
+        if not directories:
+            return
+        if directories[-1] != self._directory:
+            self._directory = directories[-1]
+            self._accumulator = EventAccumulator(str(self._directory), size_guidance={"scalars": 0})
+            self._epochs_reported = self._last_step = 0
+            self._last_wall_time = None
+        accumulator = self._accumulator
+        accumulator.Reload()
+        tags = accumulator.Tags()["scalars"]
+        validation = accumulator.Scalars("validation/total_loss") if "validation/total_loss" in tags else []
+        for point in validation[self._epochs_reported:]:
+            self._report_epoch(accumulator, tags, point)
+        self._epochs_reported = len(validation)
+        if "loss" in tags:
+            steps = accumulator.Scalars("loss")
+            if steps and steps[-1].step != self._last_step:
+                self._last_step = steps[-1].step
+                current = validation[-1].step + 2 if validation else 1
+                self.logger.info(
+                    f"Epoch {current}/{self.epochs} in progress: optimizer step "
+                    f"{self._last_step}, loss {steps[-1].value:.4f}"
+                )
+
+    def _report_epoch(self, accumulator, tags, point):
+        def value(tag):
+            matches = [p.value for p in accumulator.Scalars(tag) if p.step == point.step] if tag in tags else []
+            return matches[0] if matches else float("nan")
+
+        classes = ", ".join(
+            f"{tag.rsplit('iou_', 1)[1]} {value(tag):.2f}"
+            for tag in tags if tag.startswith("validation/iou_") and tag != "validation/iou_bg"
+        )
+        duration = (
+            f" ({(point.wall_time - self._last_wall_time) / 60:.1f} min)"
+            if self._last_wall_time is not None else ""
+        )
+        self._last_wall_time = point.wall_time
+        self.logger.info(
+            f"Epoch {point.step + 1}/{self.epochs}{duration}: train loss {value('train/loss'):.4f}, "
+            f"val loss {point.value:.4f}, mean foreground IoU {value('validation/mean_fg_iou'):.3f}"
+            + (f" [{classes}]" if classes else "")
+        )
+
+
 def train_tisam(model_path, retrain_model=False, seed=None):
     """Train native TiSAM on the normal nesting-aware CODAvision tiles."""
     import shutil
@@ -163,7 +255,17 @@ def train_tisam(model_path, retrain_model=False, seed=None):
         from datetime import datetime
         config.name += "-" + datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     save_model_metadata(str(root), {"framework": "pytorch"})
-    train(config, resume=not retrain_model)
+    from base.utils.logger import Logger
+    logger = Logger(log_dir=str(root / "logs"), model_name=metadata.get("nm", "TiSAM")).logger
+    progress = TiSAMProgress(
+        config.out_dir / config.name, logger, config.epochs,
+        config.batch_size, config.accumulation_steps,
+    )
+    progress.start()
+    try:
+        train(config, resume=not retrain_model)
+    finally:
+        progress.stop()
     source = config.out_dir / config.name / "checkpoints" / "best.safetensors"
     if not source.is_file():
         raise FileNotFoundError(f"TiSAM training did not produce {source}")

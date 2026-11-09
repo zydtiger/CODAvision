@@ -12,17 +12,15 @@ CODAvision is an open-source Python package designed for semantic segmentation o
    - [Hardware](#️-hardware)
    - [Software](#-software)
 2. [Installation Guide](#️-2-installation-guide)
-   - [Install with uv](#install-with-uv)
-   - [Step 1: Install Miniconda](#-step-1-install-miniconda)
-   - [Step 2: Create and Activate CODAvision Environment](#-step-2-create-and-activate-codavision-environment)
-   - [Step 3: Install CUDA Toolkit and cuDNN](#-step-3-install-cuda-toolkit-and-cudnn)
-   - [Step 4: Install CODAvision](#-step-4-install-codavision)
-   - [Step 5: Launch CODAvision GUI](#️-step-5-launch-codavision-gui)
+   - [Prerequisites](#prerequisites)
+   - [Linux and Apple Silicon macOS](#linux-and-apple-silicon-macos)
+   - [Windows](#windows)
+   - [Using TiSAM](#using-tisam)
 3. [Demo](#-3-demo)
-   - [Sample Dataset](#-sample-dataset)
-   - [Instructions to Run on Sample Data](#-instructions-to-run-on-sample-data)
-   - [Expected Output](#-expected-output)
-   - [Expected Runtime](#-expected-runtime)
+   - [Sample Dataset](#sample-dataset)
+   - [Instructions to Run on Sample Data](#instructions-to-run-on-sample-data)
+   - [Expected Output](#expected-output)
+   - [Expected Runtime](#expected-runtime)
 4. [Adding Custom Model Architectures](#-4-adding-custom-model-architectures)
 
 ---
@@ -59,11 +57,21 @@ CODAvision is an open-source Python package designed for semantic segmentation o
 
 ## ⚙️ 2. Installation Guide
 
-### Install with uv
+CODAvision is installed with [uv](https://docs.astral.sh/uv/), which creates the Python
+environment and installs the exact locked dependencies (TensorFlow, PyTorch and TiSAM).
 
-Install [uv](https://docs.astral.sh/uv/getting-started/installation/) **0.10.10 or
-newer** (check with `uv --version`; upgrade with `uv self update`), then clone
-CODAvision and install the locked dependencies:
+### Prerequisites
+
+- [Git](https://git-scm.com/downloads) (TiSAM is installed from a pinned Git commit of `Kiemen-Lab/tisam`)
+- A current [NVIDIA driver](https://www.nvidia.com/Download/index.aspx) (Windows/Linux, for GPU use)
+- **uv 0.10.10 or newer** (check with `uv --version`). On Windows with Anaconda, an older
+  `uv.exe` may come first on `PATH` and fail with
+  `Required uv version >=0.10.10 does not match the running version`. Run `where.exe uv`
+  and call the newer copy, e.g. `Set-Alias uv "$env:CONDA_PREFIX\Scripts\uv.exe"`.
+
+You do not need to install Python yourself: uv installs Python 3.10 (`.python-version`).
+
+### Linux and Apple Silicon macOS
 
 ```bash
 git clone https://github.com/Kiemen-Lab/CODAvision.git
@@ -72,185 +80,147 @@ uv sync --locked
 uv run --locked CODAvision
 ```
 
-> **Windows with Anaconda:** an older `uv.exe` in Anaconda's base environment can
-> come first on `PATH` even when the CODAvision conda environment is active, which
-> fails with `Required uv version >=0.10.10 does not match the running version`.
-> Run `where.exe uv` and `uv --version` to check. If the wrong copy is used, call
-> the environment's copy instead, e.g. `& "$env:CONDA_PREFIX\Scripts\uv.exe" sync --locked`
-> in PowerShell, or define `Set-Alias uv "$env:CONDA_PREFIX\Scripts\uv.exe"` for the session.
+Linux installs TensorFlow's CUDA libraries and PyTorch with CUDA 12.8. macOS runs on the
+CPU (no CUDA). To use Python 3.11 instead of 3.10, run `uv python pin 3.11` before syncing.
 
-Both TensorFlow and PyTorch are installed by default. Linux x86_64 uses
-TensorFlow 2.21 / tf-keras 2.21 and PyTorch 2.11 / torchvision 0.26 with CUDA
-12.8. Native Windows uses TensorFlow 2.10.1 / Keras 2.10 and the same PyTorch
-versions; first install CUDA 11.2 / cuDNN 8.1 using Steps 2–3 below (or
-[environment-windows.yml](environment-windows.yml)) and keep Conda activated.
-Apple Silicon macOS uses TensorFlow 2.21 / tf-keras 2.21 and PyTorch from
-PyPI for CPU development, without CUDA or `tensorflow-metal`.
+### Windows
 
-`.python-version` selects Python 3.10. To use Python 3.11 on Linux or macOS,
-run `uv python pin 3.11` before syncing so later `uv run` commands keep using
-3.11. Native Windows requires Python 3.10; Python 3.12+ and Intel macOS are
-not included in this environment.
+Native Windows uses TensorFlow 2.10, which needs the CUDA 11.2 and cuDNN 8.1 libraries
+to use the GPU, and `uv` cannot install them. The commands below use conda only for this:
+[environment-windows.yml](environment-windows.yml) creates a new conda environment that
+contains Python 3.10, those two libraries and `uv`. The CODAvision packages themselves are
+then installed by `uv`. Install [Miniconda](https://docs.anaconda.com/miniconda/) first if needed.
 
-For development, use `uv sync --locked --extra dev` and
-`uv run --locked --extra dev pytest`. Use `--extra test` for minimal test tools.
-
-### TiSAM model
-
-Select **TiSAM** in the existing model dropdown under **Advanced settings**.
-Use the normal image, annotation, class, whitespace and nesting tabs. Generated
-training/validation tiles, class colors, testing and classification windows are
-shared with the CNN models. The adapter maps CODAvision's final `black` class to
-TiSAM's first `void` class and restores the original class order for prediction.
-
-The optional TiSAM YAML field in Advanced settings accepts `model`, `training`
-and `data` settings from TiSAM. For example:
-
-```yaml
-model:
-  extra_encoder: hf-hub:MahmoodLab/UNI2-h
-training:
-  device: cuda
-  epochs: 100
-  learning_rate: 0.0001
-  accumulation_steps: 16
-  precision: bf16
-  sam3_checkpoint: /path/to/sam3.pt
+```bash
+git clone https://github.com/Kiemen-Lab/CODAvision.git
+cd CODAvision
+conda env create -n codavision-gpu -f environment-windows.yml
+conda activate codavision-gpu
+uv sync --locked
+uv run --locked CODAvision
 ```
 
-Class names, colors, tile size, batch size and dataset locations come from the
-normal tabs, rather than this YAML. Foundation encoder weights/access must be
-available. TiSAM uses its native trainer and normalization on TIFF/PNG tiles;
-its weights are saved as `best_model_TiSAM.safetensors` beside `net.pkl`.
+Keep the conda environment activated whenever you run CODAvision, so TensorFlow can find
+the CUDA libraries. PyTorch brings its own CUDA 12.8 runtime. Windows requires Python 3.10.
 
-Both pip and uv install the same pinned TiSAM Git revision. Python 3.9 is no
-longer supported by the dependency modernization in PR #53: use Python 3.10
-on native Windows, or Python 3.10/3.11 on Linux and Apple Silicon macOS.
-Windows pins TensorBoardX 2.6 and protobuf 3.19 to match TensorFlow 2.10.1.
-Linux/macOS use protobuf >=6.31.1,<8 because TensorFlow 2.21 requires it;
-the former protobuf <5 bound is incompatible with that TensorFlow version.
+> **No TensorFlow GPU needed?** The PyTorch models (DeepLabV3+ PyTorch, TiSAM) do not need
+> conda: on Windows you can skip the conda steps and run only `uv sync --locked` and
+> `uv run --locked CODAvision`. TensorFlow models then run on the CPU.
 
+**⏱️ Typical installation time:** 10–15 minutes.
 
-To install with Conda and pip instead, follow the steps below.
+### Which model needs what
+
+| Model | Framework | Extra requirements |
+|---|---|---|
+| UNet, DeepLabV3+ (TensorFlow) | TensorFlow | Windows GPU: the conda CUDA 11.2 / cuDNN 8.1 environment above |
+| DeepLabV3+ (PyTorch) | PyTorch | None beyond the install above |
+| TiSAM | PyTorch | Hugging Face access to the encoder weights, SAM3 checkpoint, a small batch size (see below) |
+
+**Choosing the framework:** the DeepLabV3+ model is trained with TensorFlow by default.
+To train it with PyTorch instead, set `CODAVISION_FRAMEWORK` before launching (no config
+file edit needed). TiSAM always uses PyTorch regardless of this setting.
+
+```powershell
+# Windows PowerShell
+$env:CODAVISION_FRAMEWORK = "pytorch"; uv run --locked CODAvision
+```
+
+```bash
+# Linux / macOS
+CODAVISION_FRAMEWORK=pytorch uv run --locked CODAvision
+```
+
+### Using TiSAM
+
+#### Prerequisite: Hugging Face access
+
+TiSAM downloads two gated models the first time it runs: the encoder `MahmoodLab/UNI2-h`
+and the SAM3 weights `facebook/sam3`. Without access, training fails when the model is
+built, so complete this one-time setup before selecting TiSAM:
+
+1. Create a [Hugging Face](https://huggingface.co/join) account.
+2. Request access on the [UNI2-h](https://huggingface.co/MahmoodLab/UNI2-h) and
+   [SAM3](https://huggingface.co/facebook/sam3) model pages and wait for approval.
+3. Log in inside the CODAvision environment:
+   1. Create a token: on huggingface.co open your profile, then **Settings > Access Tokens >
+      Create new token**. A **Read** token is enough. Copy it when it is shown, since it
+      cannot be viewed again.
+   2. From the CODAvision folder, run:
+      ```bash
+      uv run hf auth login
+      ```
+   3. Paste the token when prompted (the characters are not displayed). If asked whether to
+      add the token as a git credential, answer `n`.
+   4. Check that it worked with `uv run hf auth whoami`, which prints your username.
+
+   The login is stored on your computer, so you only need to do this once. If the command
+   says "User is already logged in", a token is saved but may be expired or invalid: run
+   `uv run hf auth whoami`, and if it reports an invalid token, run `uv run hf auth login --force`
+   to replace it.
+
+The weights are then downloaded and cached automatically. To use a SAM3 file you already
+have, set `sam3_checkpoint` in the YAML settings below instead.
+
+#### Running TiSAM
+
+Select **TiSAM** in the model dropdown under **Advanced settings** and use the normal image,
+annotation, class, whitespace and nesting tabs. Tiles, class colors, testing and
+classification are shared with the other models. CODAvision's final `black` class is
+treated as TiSAM's `void` class, so it is not learned as a predicted class.
+
+- **Batch size** comes from the Advanced settings batch size box. TiSAM uses much more GPU
+  memory than the CNN models, so start small and raise `accumulation_steps` to compensate.
+- **Optional TiSAM settings (YAML)** appear below it when TiSAM is selected. Accepted
+  sections are `model`, `training` and `data`:
+
+  ```yaml
+  model:
+    extra_encoder: hf-hub:MahmoodLab/UNI2-h
+  training:
+    device: cuda
+    epochs: 100
+    learning_rate: 0.0001
+    accumulation_steps: 16
+    precision: bf16
+    sam3_checkpoint: /path/to/sam3.pt
+  ```
+
+  Class names, colors, tile size, batch size and dataset locations come from the normal
+  tabs and cannot be set here.
+- **Output:** the trained model is saved as `best_model_TiSAM.safetensors` next to `net.pkl`.
+
+### Notes
+
+- Supported Python: 3.10 on Windows; 3.10 or 3.11 on Linux and macOS. Python 3.9 is no
+  longer supported.
+- Developers: `uv sync --locked --extra dev`, then `uv run --locked --extra dev pytest`.
+- Without uv (`pip`) is possible with Python 3.10 (`pip install torch==2.11.0
+  torchvision==0.26.0 --index-url https://download.pytorch.org/whl/cu128`, then
+  `pip install -e .`), but `uv.lock` is the tested path.
+- In notebooks and custom models, import `base` before using Keras and use
+  `from tensorflow import keras` (or set `TF_USE_LEGACY_KERAS=1`). Existing HDF5
+  checkpoints keep their `.keras` filenames. Custom AdamW code on Windows must use
+  `jit_compile=False`.
 
 ---
 
-### Step 1: Install Miniconda
-
-Download and install Miniconda by following the instructions provided [here](https://docs.anaconda.com/miniconda/).
-
----
-
-### Step 2: Create and Activate CODAvision Environment
-
-**For Windows and Linux:**
-```bash
-conda create -n CODAvision python=3.10
-conda activate CODAvision
-```
-
-**For macOS:**
-
-- **Apple Silicon (M1/M2/M3/M4), CPU development** — use Python 3.10 or 3.11:
-```bash
-conda create -n CODAvision python=3.10
-conda activate CODAvision
-```
----
-
-### Step 3: Install CUDA Toolkit and cuDNN
-
-**For Windows only:**
-
-Ensure that CUDA drivers are installed as per the instructions [here](https://www.tensorflow.org/install/pip#windows-native). Then, install the CUDA Toolkit and cuDNN:
-```bash
-conda install -c conda-forge cudatoolkit=11.2 cudnn=8.1.0
-```
-
-Keep Conda activated when running CODAvision so TensorFlow can find these
-libraries. PyTorch supplies its own CUDA 12.8 runtime. CODAvision disables
-AdamW JIT compilation on Windows because this Conda runtime does not include
-the XLA compiler tools; custom AdamW code must also use `jit_compile=False`.
-
-**For Linux users:** TensorFlow's CUDA libraries are installed with CODAvision;
-a compatible NVIDIA driver is still required.
-
-**For macOS users:** Skip this step.
-
----
-
-### Step 4: Install CODAvision
-
-> ⚠️ **Note:**  
-> Ensure Git is installed. If not, download it from [here](https://git-scm.com/downloads).
-
-**For Windows and Linux:**
-```bash
-pip install -e git+https://github.com/Kiemen-Lab/CODAvision.git#egg=CODAvision --extra-index-url https://download.pytorch.org/whl/cu128
-```
-
-**For macOS:**
-
-- **Apple Silicon (M1/M2/M3/M4), CPU development:**
-```bash
-pip install -e "git+https://github.com/Kiemen-Lab/CODAvision.git#egg=CODAvision"
-```
-
-This installs TensorFlow, tf-keras, PyTorch, and other dependencies. Do not install `keras` separately (it's included).
-
-After installation, restart your IDE and reactivate the environment:
-```bash
-conda activate CODAvision
-```
-
->💡 **Alternative installation option:**
-> You can also clone the repository first and install dependencies locally:  
-> ```bash
-> git clone https://github.com/Kiemen-Lab/CODAvision.git
-> cd CODAvision
-> pip install -e .
-> ```
-
-> 💡 **PyTorch GPU Support (Windows/Linux):**
-> For NVIDIA GPU acceleration with PyTorch, install CUDA-enabled PyTorch *before* installing CODAvision:
-> ```bash
-> pip install torch==2.11.0 torchvision==0.26.0 --index-url https://download.pytorch.org/whl/cu128
-> pip install -e .
-> ```
-
-TensorFlow 2.21 uses legacy Keras through `tf-keras`. In notebooks and custom
-models, import `base` before accessing Keras and use `from tensorflow import keras`,
-or set `TF_USE_LEGACY_KERAS=1` before starting Python. Existing HDF5 checkpoints
-retain their historical `.keras` filenames.
-
----
-
-### 🖼️ Step 5: Launch CODAvision GUI
-
-After completing the installation, run the following command to launch the GUI:
-```bash
-CODAvision
-```
-
-**⏱️ Typical Installation Time:** Approximately 10–15 minutes on a standard desktop computer.
-
----
 
 ## 🎬 3. Demo
 
-### 📂 Sample Dataset
+### Sample Dataset
 
 Access the sample dataset [here](https://drive.google.com/drive/folders/1dkF10ojFylRl1OrcjRcgz0JIey1-zJwB?usp=drive_link).
 
-### 📝 Instructions to Run on Sample Data
+### Instructions to Run on Sample Data
 
 Access the demo instructions [here](https://drive.google.com/file/d/1ZtL0MrC_uGJmYUgUi4EBto6gyXNsg3Hh/view?usp=drive_link).
 
-### 📊 Expected Output
+### Expected Output
 
 Access the expected output [here](https://drive.google.com/drive/folders/1D3xujNXFZjP76CYznlfZtLYrKdyaKGDU?usp=sharing).
 
-### ⏳ Expected Runtime
+### Expected Runtime
 
 - **GPU-Powered Workstation:** Approximately 2–3 hours for model training and image processing.
 - **Desktop Computer with no GPU:** Image processing and training time may extend up to 10 hours.

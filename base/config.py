@@ -5,6 +5,7 @@ This module provides centralized configuration management for the CODAvision
 package, eliminating magic numbers and hardcoded values throughout the codebase.
 """
 
+import os
 from dataclasses import dataclass, field
 from typing import List, Tuple, Optional
 from enum import Enum
@@ -65,7 +66,8 @@ class ModelDefaults:
     TILE_GENERATION_MODE = "modern"  # Default tile generation mode ("modern" or "legacy")
 
     # ===== FRAMEWORK CONFIGURATION =====
-    DEFAULT_FRAMEWORK = "tensorflow"  # "pytorch" or "tensorflow"
+    # "pytorch" or "tensorflow"; the CODAVISION_FRAMEWORK environment variable overrides it
+    DEFAULT_FRAMEWORK = os.environ.get("CODAVISION_FRAMEWORK") or "tensorflow"
 
     # PyTorch-specific settings
     PYTORCH_DEVICE = "auto"  # auto, cuda, mps, cpu
