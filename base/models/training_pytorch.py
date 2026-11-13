@@ -25,6 +25,7 @@ import time
 import pickle
 import logging
 import warnings
+import contextlib
 from typing import Dict, List, Optional, Tuple, Union, Any
 from glob import glob
 
@@ -40,7 +41,7 @@ from base.models.backbones import model_call
 from base.utils.logger import Logger
 from base.data.loaders_pytorch import PyTorchSegmentationDataset
 from base.data.loaders import load_model_metadata
-from base.config import DataConfig, ModelDefaults
+from base.config import DataConfig, ModelDefaults, TiSAMDefaults
 
 # Suppress warnings
 warnings.filterwarnings('ignore')
@@ -68,23 +69,53 @@ class WeightedCrossEntropyLoss(nn.Module):
         num_classes (int): Number of classes
     """
 
-    def __init__(self, class_weights: Union[List[float], np.ndarray]):
+    def __init__(
+        self,
+        class_weights: Union[List[float], np.ndarray],
+        reduction: str = 'per_class_mean',
+        weight_power: float = 1.0
+    ):
         """
         Initialize the weighted cross entropy loss.
 
         Args:
             class_weights: Weights for each class. Will be normalized to sum to 1.
+            reduction: How the per-pixel losses are reduced.
+                'per_class_mean' (default): average within each class, then
+                    weight and sum. Matches the MATLAB and TensorFlow
+                    implementations. Note that averaging per class already
+                    removes class frequency, so the weights balance a second
+                    time; with a wide frequency spread this over-weights rare
+                    classes substantially.
+                'weighted_sum': sum the weighted per-pixel losses and divide
+                    by the summed weights of those pixels. This is TiSAM's
+                    upstream reduction and balances classes exactly once.
+            weight_power: Exponent applied to the class weights before
+                normalization. 1.0 leaves them unchanged; 0.5 tempers them
+                (TiSAM exposes this as tempered_weight_power).
 
         Raises:
-            ValueError: If class weights contain NaN or infinite values
+            ValueError: If class weights contain NaN or infinite values,
+                or if reduction is not a recognized value
         """
         super(WeightedCrossEntropyLoss, self).__init__()
+
+        valid_reductions = ('per_class_mean', 'weighted_sum')
+        if reduction not in valid_reductions:
+            raise ValueError(
+                f"Invalid reduction: {reduction}. Must be one of {valid_reductions}"
+            )
+        self.reduction = reduction
 
         # Convert to tensor
         if isinstance(class_weights, np.ndarray):
             weights = torch.from_numpy(class_weights).float()
         else:
             weights = torch.tensor(class_weights, dtype=torch.float32)
+
+        # Optional tempering of the weight spread
+        if weight_power != 1.0:
+            weights = weights.clamp_min(0).pow(weight_power)
 
         # Validate weights before normalization
         if torch.any(torch.isnan(weights)):
@@ -139,6 +170,22 @@ class WeightedCrossEntropyLoss(nn.Module):
         # Flatten tensors for easier processing
         y_pred_flat = y_pred.permute(0, 2, 3, 1).reshape(-1, num_classes)  # [N, num_classes]
         y_true_flat = y_true.reshape(-1)  # [N]
+
+        if self.reduction == 'weighted_sum':
+            # TiSAM's reduction: weight each pixel by its true class, sum, and
+            # divide by the summed weights of those same pixels. A class with
+            # n pixels contributes n terms each scaled by w, and median-frequency
+            # weights satisfy n * w ~ constant, so every class ends up with the
+            # same influence - balanced exactly once rather than twice.
+            per_pixel_loss = F.cross_entropy(
+                y_pred_flat,
+                y_true_flat,
+                weight=self.class_weights,
+                reduction='none'
+            )
+            denominator = self.class_weights[y_true_flat].sum()
+
+            return per_pixel_loss.sum() / denominator.clamp_min(1e-8)
 
         # Compute per-pixel cross entropy loss (with logits)
         per_pixel_loss = F.cross_entropy(
@@ -278,6 +325,31 @@ class PyTorchSegmentationTrainer:
         self.use_amp = ModelDefaults.PYTORCH_AMP
         self.use_compile = ModelDefaults.PYTORCH_COMPILE
         self.gradient_accumulation_steps = ModelDefaults.GRADIENT_ACCUMULATION_STEPS
+
+        # Loss reduction, weight tempering and compute precision. These defaults
+        # preserve the MATLAB/TensorFlow-aligned behaviour; architecture-specific
+        # trainers override them (see PyTorchTiSAMTrainer).
+        self.loss_reduction = 'per_class_mean'
+        self.weight_power = 1.0
+        self.precision = 'fp32'
+        self.weight_decay_override = None
+        self.warmup_ratio = 0.0
+
+        # Smallest validation-loss improvement that counts as a new best.
+        # 0.0 keeps the existing CNN behaviour, where any improvement counts;
+        # PyTorchTiSAMTrainer sets a real tolerance.
+        self.early_stopping_min_delta = 0.0
+
+        # Epochs between refreshes of the rolling 'latest' checkpoint.
+        # 0 writes it at every validation, which is the existing behaviour.
+        # A new best is written as soon as it appears either way.
+        self.checkpoint_every_epochs = 0
+
+        # The duplicate 'checkpoint_latest.pth' / 'checkpoint_best.pth' copies
+        # are kept for backward compatibility and are asserted by the test
+        # suite. They are byte-identical to the model-type-named files, so
+        # architectures with very large checkpoints switch them off.
+        self.save_legacy_checkpoints = True
 
         # AMP scaler (only if using AMP and CUDA)
         self.scaler = None
@@ -440,6 +512,22 @@ class PyTorchSegmentationTrainer:
         self.model = model
         return model
 
+    def _autocast(self):
+        """
+        Autocast context for the configured precision.
+
+        Returns a bf16 autocast context when precision is 'bf16' on CUDA,
+        otherwise a no-op. bf16 has the same exponent range as fp32, so unlike
+        fp16 it needs no GradScaler and works in the standard training branch.
+
+        Returns:
+            A context manager
+        """
+        if self.precision == 'bf16' and self.device.type == 'cuda':
+            return torch.autocast(device_type='cuda', dtype=torch.bfloat16)
+
+        return contextlib.nullcontext()
+
     def setup_optimizer(self, learning_rate: float = 0.001, weight_decay: float = 0.0):
         """
         Setup optimizer (Adam with weight decay for L2 regularization).
@@ -462,9 +550,16 @@ class PyTorchSegmentationTrainer:
         Args:
             class_weights: Weights for each class
         """
-        self.criterion = WeightedCrossEntropyLoss(class_weights)
+        self.criterion = WeightedCrossEntropyLoss(
+            class_weights,
+            reduction=self.loss_reduction,
+            weight_power=self.weight_power
+        )
         self.criterion = self.criterion.to(self.device)
-        self.logger.logger.info("Loss function: WeightedCrossEntropyLoss")
+        self.logger.logger.info(
+            f"Loss function: WeightedCrossEntropyLoss "
+            f"(reduction={self.loss_reduction}, weight_power={self.weight_power})"
+        )
 
     def setup_scheduler(self, mode: str = 'min', factor: float = 0.5,
                        patience: int = 1):
@@ -476,16 +571,30 @@ class PyTorchSegmentationTrainer:
             factor: Factor by which to reduce LR
             patience: Number of validations with no improvement before reducing LR
         """
+        # Use one definition of "improved" for both plateau mechanisms. With a
+        # relative threshold of 1e-4 the scheduler calls a plateau at ~2e-5 of
+        # a 0.236 loss, roughly 40x sooner than early stopping's absolute
+        # min_delta, so the LR could collapse while the run still counted as
+        # progressing. Where no min_delta is set (the CNN models) the original
+        # relative threshold is kept unchanged.
+        if self.early_stopping_min_delta > 0:
+            threshold_mode, threshold = 'abs', self.early_stopping_min_delta
+        else:
+            threshold_mode, threshold = 'rel', 0.0001
+
         self.scheduler = ReduceLROnPlateau(
             self.optimizer,
             mode=mode,
             factor=factor,
             patience=patience,
-            threshold_mode='rel',
-            threshold=0.0001,
+            threshold_mode=threshold_mode,
+            threshold=threshold,
             min_lr=self.min_lr
         )
-        self.logger.logger.info(f"LR Scheduler: ReduceLROnPlateau (patience={patience}, factor={factor})")
+        self.logger.logger.info(
+            f"LR Scheduler: ReduceLROnPlateau (patience={patience}, factor={factor}, "
+            f"threshold={threshold} {threshold_mode}, min_lr={self.min_lr})"
+        )
 
     def create_dataloaders(
         self,
@@ -760,19 +869,29 @@ class PyTorchSegmentationTrainer:
         val_loss = 0.0
         correct_pixels = 0
         total_pixels = 0
-        iou_per_class = np.zeros(self.num_classes)
-        class_present = np.zeros(self.num_classes, dtype=bool)
+        # Accumulate intersections and unions across the whole validation set
+        # rather than averaging per-batch IoUs. Summing the per-batch ratios
+        # without dividing made the reported value scale with the number of
+        # batches, and averaging them would still over-weight classes that
+        # appear in few batches.
+        intersection_per_class = np.zeros(self.num_classes, dtype=np.int64)
+        union_per_class = np.zeros(self.num_classes, dtype=np.int64)
 
         with torch.no_grad():
             for images, masks in val_dataloader:
                 images = images.to(self.device)
                 masks = masks.to(self.device)
 
-                # Forward pass
-                outputs = self.model(images)
+                # Forward pass. Under the same autocast as the training step:
+                # scoring the model in a different numeric regime than it
+                # trains in is its own source of drift, and for TiSAM an fp32
+                # pass through the frozen encoders is both slower and the
+                # peak-VRAM moment, since the validation loader uses the
+                # training batch size.
+                with self._autocast():
+                    outputs = self.model(images)
+                    loss = self.criterion(outputs, masks)
 
-                # Compute loss
-                loss = self.criterion(outputs, masks)
                 val_loss += loss.item()
 
                 # Compute accuracy
@@ -791,17 +910,21 @@ class PyTorchSegmentationTrainer:
                     intersection = (pred_mask & true_mask).sum().item()
                     union = (pred_mask | true_mask).sum().item()
 
-                    if union > 0:
-                        iou_per_class[class_idx] += intersection / union
-                        class_present[class_idx] = True
+                    intersection_per_class[class_idx] += intersection
+                    union_per_class[class_idx] += union
 
         # Compute average metrics
         val_loss /= len(val_dataloader)
         val_accuracy = correct_pixels / total_pixels if total_pixels > 0 else 0.0
 
-        # Mean IoU across present classes
+        # Mean IoU over the classes that appear anywhere in the validation set,
+        # on a 0-1 scale. A class absent from both predictions and labels has a
+        # zero union and is excluded rather than counted as a perfect score.
+        class_present = union_per_class > 0
         if np.any(class_present):
-            val_iou = np.mean(iou_per_class[class_present])
+            val_iou = float(np.mean(
+                intersection_per_class[class_present] / union_per_class[class_present]
+            ))
         else:
             val_iou = 0.0
 
@@ -814,7 +937,8 @@ class PyTorchSegmentationTrainer:
         iteration: int,
         val_loss: float,
         val_accuracy: float,
-        is_best: bool = False
+        is_best: bool = False,
+        write_periodic: bool = True
     ):
         """
         Save model checkpoint with model-type-specific naming.
@@ -827,7 +951,15 @@ class PyTorchSegmentationTrainer:
             val_loss: Validation loss at this checkpoint
             val_accuracy: Validation accuracy at this checkpoint
             is_best: Whether this is the best model so far
+            write_periodic: Whether to refresh the rolling 'latest' checkpoint.
+                The training loop passes False between the intervals set by
+                checkpoint_every_epochs. A new best is always written.
         """
+        # Nothing to write: return before materializing the state dict, which
+        # for TiSAM copies several GB off the GPU.
+        if not write_periodic and not is_best:
+            return
+
         checkpoint = {
             'iteration': iteration,
             'model_state_dict': self.model.state_dict(),
@@ -843,12 +975,14 @@ class PyTorchSegmentationTrainer:
         model_type = self.metadata.get('model_type', 'DeepLabV3_plus')
 
         # Save latest checkpoint (final model)
-        final_model_path = os.path.join(self.model_path, f'{model_type}.pth')
-        torch.save(checkpoint, final_model_path)
+        if write_periodic:
+            final_model_path = os.path.join(self.model_path, f'{model_type}.pth')
+            torch.save(checkpoint, final_model_path)
 
-        # Also save generic checkpoint for backward compatibility
-        checkpoint_path = os.path.join(self.model_path, 'checkpoint_latest.pth')
-        torch.save(checkpoint, checkpoint_path)
+            # Also save generic checkpoint for backward compatibility
+            if self.save_legacy_checkpoints:
+                checkpoint_path = os.path.join(self.model_path, 'checkpoint_latest.pth')
+                torch.save(checkpoint, checkpoint_path)
 
         # Save best checkpoint
         if is_best:
@@ -856,10 +990,14 @@ class PyTorchSegmentationTrainer:
             torch.save(checkpoint, best_model_path)
 
             # Also save generic best checkpoint for backward compatibility
-            best_checkpoint_path = os.path.join(self.model_path, 'checkpoint_best.pth')
-            torch.save(checkpoint, best_checkpoint_path)
+            if self.save_legacy_checkpoints:
+                best_checkpoint_path = os.path.join(self.model_path, 'checkpoint_best.pth')
+                torch.save(checkpoint, best_checkpoint_path)
 
-            self.logger.logger.info(f"Best model saved (val_loss={val_loss:.4f}, val_acc={val_accuracy:.4f})")
+            self.logger.logger.info(
+                f"Best model saved "
+                f"(val_loss={val_loss:.4f}, val_acc={val_accuracy:.4f})"
+            )
 
     def load_checkpoint(self, checkpoint_path: str) -> int:
         """
@@ -976,6 +1114,8 @@ class PyTorchSegmentationTrainer:
 
         # Setup training components
         l2_weight = self.metadata.get('l2_regularization_weight', 0.0)
+        if self.weight_decay_override is not None:
+            l2_weight = self.weight_decay_override
         self.setup_optimizer(learning_rate=learning_rate, weight_decay=l2_weight)
         self.setup_loss(class_weights=class_weights)
         self.setup_scheduler(mode='min', factor=self.lr_reduction_factor,
@@ -997,10 +1137,24 @@ class PyTorchSegmentationTrainer:
         global_iteration = start_iteration
         best_val_loss = float('inf')
         validations_without_improvement = 0
-        validations_since_lr_reduction = 0
+
+        # Epoch of the last rolling checkpoint. Negative so the first
+        # validation always writes one, whatever the interval.
+        last_checkpoint_epoch = -self.checkpoint_every_epochs - 1
 
         total_iterations = len(train_dataloader) * epochs
         self.logger.logger.info(f"Total iterations: {total_iterations}")
+
+        # Linear LR warmup. Query decoders are sensitive to large early steps,
+        # so TiSAM ramps the rate over the first fraction of training. While
+        # warming up, the plateau scheduler is held back so the two do not
+        # fight over the learning rate.
+        warmup_iterations = int(self.warmup_ratio * total_iterations)
+        if warmup_iterations > 0:
+            self.logger.logger.info(
+                f"LR warmup: {warmup_iterations} iterations "
+                f"({100 * self.warmup_ratio:.0f}% of training) up to {learning_rate}"
+            )
 
         # Ensure at least one validation
         total_validations = max(1, total_iterations // self.validation_frequency)
@@ -1011,8 +1165,14 @@ class PyTorchSegmentationTrainer:
         self.logger.logger.info(
             f"Early stopping: {self.early_stopping_patience} epochs = "
             f"{es_patience_validations} validations "
-            f"({validations_per_epoch} validations/epoch)"
+            f"({validations_per_epoch} validations/epoch), "
+            f"min_delta={self.early_stopping_min_delta}"
         )
+        if self.checkpoint_every_epochs > 0:
+            self.logger.logger.info(
+                f"Rolling checkpoint: every {self.checkpoint_every_epochs} epochs "
+                f"(best model still written on every improvement)"
+            )
 
         start_time = time.time()
 
@@ -1048,9 +1208,11 @@ class PyTorchSegmentationTrainer:
                         self.scaler.update()
                         self.optimizer.zero_grad()
                 else:
-                    # Standard training without AMP
-                    outputs = self.model(images)
-                    loss = self.criterion(outputs, masks)
+                    # Standard training without fp16 AMP. Runs under bf16
+                    # autocast when configured, which needs no GradScaler.
+                    with self._autocast():
+                        outputs = self.model(images)
+                        loss = self.criterion(outputs, masks)
 
                     # Scale loss for gradient accumulation
                     loss = loss / self.gradient_accumulation_steps
@@ -1073,6 +1235,12 @@ class PyTorchSegmentationTrainer:
                 epoch_loss += loss.item() * self.gradient_accumulation_steps
                 batch_count += 1
                 global_iteration += 1
+
+                # Apply the warmup factor for the next step
+                if global_iteration < warmup_iterations:
+                    warmup_lr = learning_rate * (global_iteration + 1) / warmup_iterations
+                    for param_group in self.optimizer.param_groups:
+                        param_group['lr'] = warmup_lr
 
                 # Validation at specified intervals
                 if global_iteration % self.validation_frequency == 0 or \
@@ -1101,22 +1269,39 @@ class PyTorchSegmentationTrainer:
                         f"Time: {elapsed_time:.1f}s"
                     )
 
-                    # Check for best model
-                    is_best = val_loss < best_val_loss
+                    # Check for best model. An improvement smaller than
+                    # min_delta does not count, so noise around a converged
+                    # loss cannot keep resetting the early-stopping counter.
+                    is_best = val_loss < best_val_loss - self.early_stopping_min_delta
                     if is_best:
                         best_val_loss = val_loss
                         validations_without_improvement = 0
-                        validations_since_lr_reduction = 0
                     else:
                         validations_without_improvement += 1
-                        validations_since_lr_reduction += 1
+
+                    # Refresh the rolling 'latest' checkpoint on the configured
+                    # epoch interval rather than at every validation. For TiSAM
+                    # that file carries the frozen encoders too, so writing it
+                    # 11 times an epoch costs a large share of the wall clock.
+                    # A new best is still written the moment it appears.
+                    write_periodic = True
+                    if self.checkpoint_every_epochs > 0:
+                        write_periodic = (
+                            epoch - last_checkpoint_epoch >= self.checkpoint_every_epochs
+                        )
+                    if write_periodic:
+                        last_checkpoint_epoch = epoch
 
                     # Save checkpoint
-                    self.save_checkpoint(global_iteration, val_loss, val_accuracy, is_best)
+                    self.save_checkpoint(
+                        global_iteration, val_loss, val_accuracy, is_best,
+                        write_periodic=write_periodic
+                    )
 
                     # Learning rate reduction
                     if self.scheduler:
-                        self.scheduler.step(val_loss)
+                        if global_iteration >= warmup_iterations:
+                            self.scheduler.step(val_loss)
 
                     # Early stopping
                     if validations_without_improvement >= es_patience_validations:
@@ -1197,6 +1382,157 @@ class PyTorchDeepLabV3PlusTrainer(PyTorchSegmentationTrainer):
         if freeze_encoder and hasattr(self.model, 'freeze_encoder'):
             self.model.freeze_encoder()
             self.logger.logger.info("Encoder weights frozen (transfer learning)")
+
+        # Call parent train method (which will use instance variables if None)
+        return super().train(
+            epochs=epochs,
+            batch_size=batch_size,
+            learning_rate=learning_rate,
+            validation_split=validation_split,
+            num_workers=num_workers,
+            resume_from_checkpoint=resume_from_checkpoint,
+            seed=seed,
+        )
+
+
+class PyTorchTiSAMTrainer(PyTorchSegmentationTrainer):
+    """
+    Specialized trainer for the TiSAM architecture.
+
+    This class extends PyTorchSegmentationTrainer with TiSAM specific
+    behavior, mirroring PyTorchDeepLabV3PlusTrainer.
+
+    Note:
+        Encoder freezing is configured through TiSAM's own ModelConfig
+        ('finetune' and 'extra_finetune', both False by default), so unlike
+        DeepLabV3+ there is no separate freeze_encoder step here.
+    """
+
+    def __init__(self, model_path: str, logger: Optional[Logger] = None):
+        """
+        Initialize the trainer with TiSAM's upstream training defaults.
+
+        TiSAM is a query decoder on frozen foundation-model encoders and trains
+        very differently from the CNN models, so its own run configuration is
+        applied here rather than ModelDefaults. Several of these override values
+        that come from the GUI, so each change is logged.
+
+        Args:
+            model_path: Path to model directory
+            logger: Optional logger instance
+        """
+        super().__init__(model_path, logger)
+
+        previous = {
+            'learning_rate': self.learning_rate,
+            'batch_size': self.batch_size,
+            'epochs': self.epochs,
+            'gradient_accumulation_steps': self.gradient_accumulation_steps,
+            'precision': self.precision,
+            'loss_reduction': self.loss_reduction,
+            'early_stopping_patience': self.early_stopping_patience,
+            'early_stopping_min_delta': self.early_stopping_min_delta,
+            'checkpoint_every_epochs': self.checkpoint_every_epochs,
+            'lr_reduction_patience': self.lr_reduction_patience,
+            'min_lr': self.min_lr,
+        }
+
+        self.learning_rate = TiSAMDefaults.LEARNING_RATE
+        self.batch_size = TiSAMDefaults.BATCH_SIZE
+        self.gradient_accumulation_steps = TiSAMDefaults.ACCUMULATION_STEPS
+        self.precision = TiSAMDefaults.PRECISION
+        self.loss_reduction = TiSAMDefaults.LOSS_REDUCTION
+        self.weight_power = TiSAMDefaults.WEIGHT_POWER
+        self.weight_decay_override = TiSAMDefaults.WEIGHT_DECAY
+        self.warmup_ratio = TiSAMDefaults.WARMUP_RATIO
+        self.early_stopping_patience = TiSAMDefaults.EARLY_STOPPING_PATIENCE
+
+        # Require a real improvement before the early-stopping counter resets.
+        # Without this, drift in the fourth decimal of a converged loss keeps
+        # training alive until the epoch limit.
+        self.early_stopping_min_delta = TiSAMDefaults.EARLY_STOPPING_MIN_DELTA
+
+        # A TiSAM checkpoint carries the frozen encoders as well, so refresh
+        # the rolling copy on an epoch interval instead of every validation.
+        self.checkpoint_every_epochs = TiSAMDefaults.CHECKPOINT_EVERY_EPOCHS
+
+        # Let the LR survive a noisy stretch, and keep its floor above the
+        # point where training stops moving. setup_scheduler also picks up
+        # early_stopping_min_delta, so both plateau mechanisms now agree on
+        # what counts as an improvement.
+        self.lr_reduction_patience = TiSAMDefaults.LR_REDUCTION_PATIENCE
+        self.min_lr = TiSAMDefaults.MIN_LR
+
+        # TiSAM checkpoints are several GB, so skip the byte-identical
+        # backward-compatibility copies. The model-type-named files that
+        # inference resolves are still written.
+        self.save_legacy_checkpoints = False
+
+        current = {
+            'learning_rate': self.learning_rate,
+            'batch_size': self.batch_size,
+            'epochs': self.epochs,
+            'gradient_accumulation_steps': self.gradient_accumulation_steps,
+            'precision': self.precision,
+            'loss_reduction': self.loss_reduction,
+            'early_stopping_patience': self.early_stopping_patience,
+            'early_stopping_min_delta': self.early_stopping_min_delta,
+            'checkpoint_every_epochs': self.checkpoint_every_epochs,
+            'lr_reduction_patience': self.lr_reduction_patience,
+            'min_lr': self.min_lr,
+        }
+        for name, was in previous.items():
+            if was != current[name]:
+                self.logger.logger.info(
+                    f"TiSAM default applied: {name} {was} -> {current[name]}"
+                )
+        self.logger.logger.info(
+            f"Effective batch size: {self.batch_size} x "
+            f"{self.gradient_accumulation_steps} = "
+            f"{self.batch_size * self.gradient_accumulation_steps}"
+        )
+
+    def train(
+        self,
+        epochs: int = None,
+        batch_size: int = None,
+        learning_rate: float = None,
+        validation_split: float = 0.2,
+        num_workers: Optional[int] = None,
+        resume_from_checkpoint: Optional[str] = None,
+        seed: Optional[int] = None,
+    ) -> Dict:
+        """
+        Train TiSAM model with specific configuration.
+
+        Args:
+            epochs: Number of epochs to train (defaults to self.epochs from metadata)
+            batch_size: Batch size for training (defaults to self.batch_size from metadata)
+            learning_rate: Initial learning rate (defaults to self.learning_rate from metadata)
+            validation_split: Fraction of data for validation
+            num_workers: Number of data loading workers.
+                If None, uses platform-aware default (0 on Windows, 4 on Linux/macOS).
+            resume_from_checkpoint: Optional path to checkpoint to resume from
+            seed: Optional random seed for reproducibility.
+
+        Returns:
+            Training history dictionary
+        """
+        # The platform default is 0 workers on Windows, which loads tiles in the
+        # main process and leaves the GPU idle most of the step. TiSAM is heavy
+        # enough per tile that parallel loading is what keeps the GPU fed.
+        if num_workers is None:
+            num_workers = TiSAMDefaults.NUM_WORKERS
+            self.logger.logger.info(f"TiSAM default applied: num_workers -> {num_workers}")
+
+        # Build TiSAM model if not already built
+        if self.model is None:
+            self.build_model(architecture='TiSAM')
+
+        # Enable gradient checkpointing on CPU to reduce memory usage
+        if self.device.type == 'cpu' and hasattr(self.model, 'enable_gradient_checkpointing'):
+            self.model.enable_gradient_checkpointing()
+            self.logger.logger.info("Gradient checkpointing enabled (CPU training, reduces memory usage)")
 
         # Call parent train method (which will use instance variables if None)
         return super().train(

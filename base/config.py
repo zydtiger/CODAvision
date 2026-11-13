@@ -80,6 +80,86 @@ class ModelDefaults:
     PYTORCH_MODELS = ["DeepLabV3_plus", "TiSAM"]
 
 
+class TiSAMDefaults:
+    """
+    Training defaults for the TiSAM architecture.
+
+    TiSAM is a query-decoder architecture with frozen foundation-model
+    encoders, and its upstream defaults differ substantially from the
+    CNN-oriented values in ModelDefaults. These are applied by
+    PyTorchTiSAMTrainer, while the training loop itself stays CODAvision's.
+
+    Source: https://github.com/Kiemen-Lab/tisam (src/tisam/config/run.py).
+    """
+
+    LEARNING_RATE = 1e-4          # vs 5e-4 for the CNN models
+    WEIGHT_DECAY = 1e-2           # AdamW-style decoupled decay
+    ACCUMULATION_STEPS = 5        # optimizer step every 5 batches
+    WARMUP_RATIO = 0.05           # linear warmup over the first 5% of steps
+
+    # Tiles per forward pass. The effective batch is this value times
+    # ACCUMULATION_STEPS, so 3 x 5 = 15 tiles per optimizer step, which keeps
+    # the optimizer seeing roughly what it saw at 1 x 16 while the GPU gets
+    # three tiles at a time instead of one. A ViT this size leaves most of the
+    # card idle at batch 1; raise this until VRAM is the limit, and move
+    # ACCUMULATION_STEPS the other way to hold the effective batch steady.
+    BATCH_SIZE = 3
+
+    PRECISION = "bf16"
+
+    # Upstream uses 0 workers, but its pipeline reads whole slides through
+    # zarr while CODAvision reads individual tiles from disk. Measured here, a
+    # GPU step takes 0.21s against 2.6s per observed iteration, so ~92% of the
+    # time is spent loading data in the main process. Parallel workers remove
+    # that.
+    NUM_WORKERS = 14
+
+    # Early stopping. The patience is in epochs, and the training loop turns
+    # it into a number of validations (patience x validations_per_epoch).
+    #
+    # MIN_DELTA is the size of improvement that counts. Without it the test is
+    # a bare 'val_loss < best_val_loss', so once the model converges and the
+    # scheduler has cut the LR to its floor, a drift of 0.0001 in the fourth
+    # decimal still resets the counter and training never stops. Observed on
+    # this dataset: 110 validations required, longest stall reached 24, while
+    # the loss moved 0.0008 in two hours. 0.001 is the same tolerance TiSAM's
+    # own EarlyStopping uses, and it is comparable to the relative threshold
+    # already given to ReduceLROnPlateau.
+    #
+    # The gate is cumulative, not per-validation: best_val_loss only moves
+    # when the tolerance is cleared, so steady improvements of less than
+    # MIN_DELTA each still count once they add up past it.
+    EARLY_STOPPING_PATIENCE = 10      # epochs
+    EARLY_STOPPING_MIN_DELTA = 0.001
+
+    # Learning-rate plateau handling. The shared default reduces after a
+    # single non-improving validation, so two in a row are enough to cut the
+    # LR; against a noisy loss that fires almost continuously, and at factor
+    # 0.75 it takes only 25 reductions to fall from 1e-4 to a 1e-7 floor,
+    # where the model stops moving at all while still costing full price per
+    # epoch. A longer patience and a higher floor keep the run alive until
+    # early stopping is the thing that ends it.
+    LR_REDUCTION_PATIENCE = 3     # validations
+    MIN_LR = 1e-6
+
+    # Epochs between refreshes of the rolling '<model_type>.pth' checkpoint.
+    # A TiSAM state_dict carries the frozen encoders too (~6 GB: 2.73 GB of
+    # UNI2-h plus 3.45 GB of SAM3), and the default cadence rewrites it at
+    # every validation, 11 times an epoch on the observed setup. A new best is
+    # still written the moment it appears, so nothing is lost by spacing this
+    # out; it only affects how current the resume point is.
+    CHECKPOINT_EVERY_EPOCHS = 5
+
+    # Loss reduction. 'per_class_mean' averages within each class before
+    # applying the median-frequency weights, which balances the classes twice:
+    # the per-class average already removes frequency, and the weight removes
+    # it again. On this dataset that collapsed training to 2 of 13 classes.
+    # 'weighted_sum' normalizes by the summed pixel weights instead, balancing
+    # exactly once, and is what reached 0.8856 validation accuracy.
+    LOSS_REDUCTION = "weighted_sum"
+    WEIGHT_POWER = 1.0            # 1.0 = plain median-frequency weighting
+
+
 class LoggingConfig:
     """Configuration for logging system."""
     LOG_ROTATION_MAX_BYTES = 10 * 1024 * 1024  # 10MB

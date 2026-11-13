@@ -612,3 +612,168 @@ class DeepLabV3PlusModel(nn.Module):
         output = self.decoder(aspp_out, low_level_feat, input_size)
 
         return output
+
+
+class PyTorchTiSAM(PyTorchBaseSegmentationModel):
+    """
+    PyTorch implementation of TiSAM (dual-encoder semantic segmentation).
+
+    Wraps the installable ``tisam`` package (https://github.com/Kiemen-Lab/tisam),
+    which pairs a SAM3 image encoder with a pathology foundation encoder
+    (UNI2-h, Virchow2, or UNI2-SEAL) and a semantic query decoder.
+
+    Architecture:
+    - Encoder: SAM3 image encoder
+    - Extra encoder: pathology foundation model selected by ``extra_encoder``
+    - Decoder: query decoder (6 layers by default)
+    - Output: Logits without activation, with num_classes channels
+      (TiSAM allocates num_classes + 1 channels, and
+      :class:`_TiSAMSemanticHead` slices the last one off so the count
+      matches what the rest of the pipeline expects)
+
+    Requires the optional ``tisam`` dependency, imported lazily in
+    :meth:`build_model` so this module remains importable without it.
+    """
+
+    # Pathology foundation encoder used when none is specified
+    DEFAULT_EXTRA_ENCODER = "hf-hub:MahmoodLab/UNI2-h"
+
+    def __init__(
+        self,
+        input_size: int,
+        num_classes: int,
+        l2_regularization_weight: float = 0.0,
+        extra_encoder: str = DEFAULT_EXTRA_ENCODER
+    ):
+        """
+        Initialize PyTorch TiSAM model.
+
+        Args:
+            input_size: Input image size (assumed square)
+            num_classes: Number of segmentation classes
+            l2_regularization_weight: L2 regularization weight (used by optimizer's weight_decay)
+            extra_encoder: HuggingFace Hub ID of the pathology foundation encoder.
+                One of 'hf-hub:MahmoodLab/UNI2-h', 'hf-hub:paige-ai/Virchow2',
+                or 'hf-hub:MahmoodLab/UNI2-SEAL'.
+        """
+        super().__init__(input_size, num_classes, l2_regularization_weight)
+        self.extra_encoder = extra_encoder
+
+    def build_model(self) -> nn.Module:
+        """
+        Build the complete TiSAM model.
+
+        The TiSAM module is wrapped in :class:`_TiSAMSemanticHead` so that it
+        returns num_classes channels instead of num_classes + 1.
+
+        Returns:
+            nn.Module: Complete TiSAM model
+
+        Raises:
+            ImportError: If the ``tisam`` package is not installed
+        """
+        try:
+            from tisam import ModelConfig, TiSAM
+        except ImportError as e:
+            raise ImportError(
+                "TiSAM requested but the 'tisam' package is not installed. "
+                "Install with: pip install git+https://github.com/Kiemen-Lab/tisam"
+            ) from e
+
+        config = ModelConfig(
+            num_classes=self.num_classes,
+            extra_encoder=self.extra_encoder,
+            input_hw=(self.input_size, self.input_size),
+            output_hw=(self.input_size, self.input_size)
+        )
+
+        model = _TiSAMSemanticHead(TiSAM(config), self.num_classes, config)
+        model = model.to(self.device)
+        self.model = model
+
+        return model
+
+
+class _TiSAMSemanticHead(nn.Module):
+    """
+    Normalizes the input and slices TiSAM's extra channel off.
+
+    TiSAM allocates num_classes + 1 output channels, one more than the rest of
+    CODAvision expects, and places its void/background class in channel 0
+    (``tisam/src/tisam/data/label_semantics.py`` sets invalid pixels to class
+    0, and its loss masks on ``target_indices != 0``). This wrapper keeps the
+    first num_classes channels, so the final channel is the one dropped.
+
+    Note:
+        Because the decoder is trained from scratch here, the channel the
+        supervision assigns to each class is what defines its meaning, so the
+        kept channels simply become CODAvision's classes in order and the
+        trailing channel receives no gradient. The slice happens on the raw
+        logits, before any softmax, so the remaining logits need renormalizing
+        if they are read as probabilities.
+
+        PR 54 takes the other route: it asks TiSAM for num_classes - 1 classes
+        and rotates the void channel to the end, keeping native class identity.
+
+    It also applies the input normalization TiSAM expects. The tisam package
+    normalizes inside its own dataset (``tisam/data/tile_dataset.py`` composes
+    ``albumentations.Normalize(mean=cfg.data.mean, std=cfg.data.std)``), but
+    CODAvision feeds its own loader, which hands over raw 0-255 floats. Doing
+    it here rather than in the loader keeps one dataloader for every
+    architecture and mirrors how DeepLabV3_plus subtracts its ImageNet mean
+    inside forward.
+
+    This matters more for TiSAM than for the CNN models: both of its encoders
+    are frozen (``finetune`` and ``extra_finetune`` are False, and the
+    segmentor runs them under ``torch.no_grad()``), so they cannot adapt to a
+    different input scale the way a trainable backbone can.
+    """
+
+    # tisam/src/tisam/config/data.py: DataConfig.mean / DataConfig.std, the
+    # ImageNet statistics the frozen encoders were pretrained with. Applied to
+    # RGB in [0, 1], which is the order PIL gives the loader.
+    PIXEL_MEAN = (0.485, 0.456, 0.406)
+    PIXEL_STD = (0.229, 0.224, 0.225)
+    PIXEL_SCALE = 255.0
+
+    def __init__(self, model: nn.Module, num_classes: int, config=None):
+        """
+        Initialize the semantic head wrapper.
+
+        Args:
+            model: TiSAM module emitting num_classes + 1 channels
+            num_classes: Number of segmentation classes to keep
+            config: Optional TiSAM ModelConfig the module was built from,
+                kept so checkpoint writers can record the architecture
+        """
+        super().__init__()
+        self.model = model
+        self.num_classes = num_classes
+        self.tisam_config = config
+
+        # Buffers so the constants follow .to(device) and the autocast dtype,
+        # and are not treated as trainable parameters. persistent=False keeps
+        # them out of state_dict, so checkpoints stay loadable either way.
+        self.register_buffer(
+            'pixel_mean', torch.tensor(self.PIXEL_MEAN).view(1, 3, 1, 1), persistent=False
+        )
+        self.register_buffer(
+            'pixel_std', torch.tensor(self.PIXEL_STD).view(1, 3, 1, 1), persistent=False
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Normalize the input, run TiSAM and drop the trailing channel.
+
+        Args:
+            x: Input tensor with shape (B, C, H, W), RGB in [0, 255] as the
+                dataloader and the inference tiler both produce it
+
+        Returns:
+            torch.Tensor: Logits with shape (B, num_classes, H, W)
+        """
+        x = (x / self.PIXEL_SCALE - self.pixel_mean.to(x.dtype)) / self.pixel_std.to(x.dtype)
+
+        logits = self.model(x)
+
+        return logits[:, :self.num_classes]

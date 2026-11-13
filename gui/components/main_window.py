@@ -30,8 +30,9 @@ from gui.utils import save_model_metadata_GUI
 from .ui_definitions import Ui_MainWindow
 from .classification_window import MainWindowClassify
 
-# Checkpoint extensions written by the trainers: .keras/.h5 (TensorFlow), .pth (PyTorch)
-TRAINED_MODEL_EXTENSIONS = ('.keras', '.h5', '.pth', '.safetensors')
+# Checkpoint extensions written by the trainers: .keras/.h5 (TensorFlow),
+# .pth (PyTorch)
+TRAINED_MODEL_EXTENSIONS = ('.keras', '.h5', '.pth')
 
 
 def trained_model_exists(model_dir):
@@ -287,7 +288,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.ui.resolution_CB.setCurrentText(self.resolution)
                 if model_type:
                     self.ui.model_type_CB.setCurrentText(model_type)
-                self.ui.tisam_options.setPlainText(data.get('tisam_options_yaml', ''))
                 self.populate_table_widget(self.combined_df)
 
                 # Initialize combo boxes with chosen annotation classes from ws
@@ -1358,13 +1358,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # Add or update these methods in the MainWindow class:
     def save_advanced_settings_and_close(self, train: bool):
-        if self.ui.model_type_CB.currentText() == "TiSAM":
-            from base.models.backbones_tisam import parse_options
-            try:
-                parse_options(self.ui.tisam_options.toPlainText())
-            except (ValueError, TypeError) as error:
-                QtWidgets.QMessageBox.warning(self, "TiSAM settings", str(error))
-                return
 
         # Component analysis
         component_layers = {}
@@ -1503,13 +1496,6 @@ class MainWindow(QtWidgets.QMainWindow):
             save_model_metadata_GUI(pthDL, pthim, pthtest, WS, model_name, umpix, colormap,
                                     tile_size, classNames, ntrain, nvalidate, nTA, final_df,
                                     combined_df, model_type, batch_size)
-
-        if model_type == "TiSAM":
-            from base.models.utils import save_model_metadata
-            save_model_metadata(pthDL, {
-                'framework': 'pytorch',
-                'tisam_options_yaml': self.ui.tisam_options.toPlainText(),
-            })
 
     def load_saved_values(self):
         if self.prerecorded_data:

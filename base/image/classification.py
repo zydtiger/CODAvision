@@ -98,7 +98,6 @@ class ImageClassifier:
         try:
             # Use the model utils to load metadata
             data = load_model_metadata(self.model_path)
-            self.model_data = data
 
             # Extract needed parameters
             self.class_names = data.get('classNames')
@@ -145,7 +144,9 @@ class ImageClassifier:
 
         # Framework-specific candidates, best-model before final-model.
         # TensorFlow: .keras is the current format, .h5 is legacy Keras HDF5.
-        pytorch_candidates = [best_base + '.pth', final_base + '.pth']
+        pytorch_candidates = [
+            best_base + '.pth', final_base + '.pth',
+        ]
         tf_candidates = [
             best_base + '.keras', best_base + '.h5',
             final_base + '.keras', final_base + '.h5',
@@ -206,35 +207,24 @@ class ImageClassifier:
             ValueError: If model loading fails
         """
         try:
-            if self.model_type == "TiSAM":
-                from base.models.backbones import model_call
-                from base.models.backbones_tisam import options_from_metadata
-                model = model_call(
-                    "TiSAM", self.image_size, len(self.class_names),
-                    model_options=options_from_metadata(self.model_data),
-                )
-                model.load(os.path.join(self.model_path, "best_model_TiSAM.safetensors"))
-                return model
-
             model_path, is_pytorch = self._resolve_checkpoint()
 
             logger.info(f"Loading {'PyTorch' if is_pytorch else 'TensorFlow'} model from {model_path}")
 
             if is_pytorch:
-                # Load PyTorch model with adapter
-                from base.models.backbones_pytorch import PyTorchDeepLabV3Plus
-                from base.models.wrappers import PyTorchKerasAdapter
+                # Build the architecture recorded in the metadata, not a fixed one,
+                # so the checkpoint's state_dict matches. The factory returns a
+                # PyTorchKerasAdapter when wrap_with_adapter is True.
+                from base.models.backbones import model_call
 
-                # Build model architecture
-                model_builder = PyTorchDeepLabV3Plus(
-                    input_size=self.image_size,
-                    num_classes=len(self.class_names),
-                    l2_regularization_weight=0
+                model = model_call(
+                    self.model_type,
+                    IMAGE_SIZE=self.image_size,
+                    NUM_CLASSES=len(self.class_names),
+                    framework='pytorch',
+                    wrap_with_adapter=True
                 )
-                pytorch_model = model_builder.build_model()
 
-                # Wrap with adapter
-                model = PyTorchKerasAdapter(pytorch_model)
                 model.load_weights(model_path)
 
                 logger.info("PyTorch model loaded and wrapped with Keras-compatible adapter")

@@ -27,14 +27,13 @@ def model_call(
     NUM_CLASSES: int,
     l2_regularization_weight: float = 0,
     framework: str = None,
-    wrap_with_adapter: bool = True,
-    model_options: dict = None
+    wrap_with_adapter: bool = True
 ) -> Any:
     """
     Factory function to create a segmentation model.
 
     Args:
-        name: Model type ('UNet' or 'DeepLabV3_plus')
+        name: Model type ('UNet', 'DeepLabV3_plus', or 'TiSAM')
         IMAGE_SIZE: Size of input images
         NUM_CLASSES: Number of segmentation classes
         l2_regularization_weight: L2 regularization weight (default: 0)
@@ -51,17 +50,6 @@ def model_call(
         ValueError: If model name or framework is invalid
         ImportError: If requested framework is not available
     """
-    # TiSAM is PyTorch-only, independently of the default CNN framework.
-    if name == "TiSAM":
-        if framework is not None and framework.lower() != "pytorch":
-            raise ValueError("TiSAM requires the pytorch framework")
-        from base.models.backbones_tisam import TiSAMSegmentationModel
-        builder = TiSAMSegmentationModel(
-            IMAGE_SIZE, NUM_CLASSES, l2_regularization_weight,
-            options=model_options,
-        )
-        return builder if wrap_with_adapter else builder.build_model()
-
     # Determine framework
     if framework is None:
         config = get_framework_config()
@@ -105,21 +93,23 @@ def model_call(
                 f"Available: {ModelDefaults.PYTORCH_MODELS}"
             )
 
-        from base.models.backbones_pytorch import PyTorchDeepLabV3Plus
+        from base.models.backbones_pytorch import PyTorchDeepLabV3Plus, PyTorchTiSAM
 
         if name == "DeepLabV3_plus":
             pytorch_model = PyTorchDeepLabV3Plus(IMAGE_SIZE, NUM_CLASSES, l2_regularization_weight).build_model()
-
-            # Conditionally wrap based on use case
-            if wrap_with_adapter:
-                # For TensorFlow-style inference (Keras API compatibility)
-                from base.models.wrappers import PyTorchKerasAdapter
-                return PyTorchKerasAdapter(pytorch_model)
-            else:
-                # For PyTorch-native training (raw nn.Module with .to(), .train(), etc.)
-                return pytorch_model
+        elif name == "TiSAM":
+            pytorch_model = PyTorchTiSAM(IMAGE_SIZE, NUM_CLASSES, l2_regularization_weight).build_model()
         else:
             raise ValueError(f'PyTorch implementation for {name} not available')
+
+        # Conditionally wrap based on use case
+        if wrap_with_adapter:
+            # For TensorFlow-style inference (Keras API compatibility)
+            from base.models.wrappers import PyTorchKerasAdapter
+            return PyTorchKerasAdapter(pytorch_model)
+        else:
+            # For PyTorch-native training (raw nn.Module with .to(), .train(), etc.)
+            return pytorch_model
 
     else:
         raise ValueError(f"Invalid framework: {framework}. Must be 'tensorflow' or 'pytorch'")
