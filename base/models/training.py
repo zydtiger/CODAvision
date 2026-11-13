@@ -1319,15 +1319,10 @@ def train_segmentation_model_cnns(
         if '+' in model_type:
             model_type = model_type.replace('+', '_plus')
 
-        if model_type == "TiSAM":
-            from base.models.backbones_tisam import train_tisam
-            train_tisam(pthDL, retrain_model=retrain_model, seed=seed)
-            return
-
-        if model_type not in ["DeepLabV3_plus", "UNet"]:
+        if model_type not in ["DeepLabV3_plus", "UNet", "TiSAM"]:
             raise ValueError(
                 f"Unsupported model type: {model_type}. "
-                f"Supported types are 'DeepLabV3_plus' and 'UNet'"
+                f"Supported types are 'DeepLabV3_plus', 'UNet' and 'TiSAM'"
             )
     except Exception as e:
         raise ValueError(f"Failed to load model configuration: {e}")
@@ -1360,17 +1355,26 @@ def train_segmentation_model_cnns(
             if model_type == "DeepLabV3_plus":
                 from base.models.training_pytorch import PyTorchDeepLabV3PlusTrainer
                 trainer = PyTorchDeepLabV3PlusTrainer(pthDL)
+            elif model_type == "TiSAM":
+                from base.models.training_pytorch import PyTorchTiSAMTrainer
+                trainer = PyTorchTiSAMTrainer(pthDL)
             else:
                 raise ValueError(
                     f"PyTorch trainer for {model_type} not yet implemented. "
-                    f"Available PyTorch models: DeepLabV3_plus"
+                    f"Available PyTorch models: DeepLabV3_plus, TiSAM"
                 )
         else:
             # Use TensorFlow trainer
             if model_type == "DeepLabV3_plus":
                 trainer = DeepLabV3PlusTrainer(pthDL)
-            else:  # model_type == "UNet"
+            elif model_type == "UNet":
                 trainer = UNetTrainer(pthDL)
+            else:
+                raise ValueError(
+                    f"TensorFlow trainer for {model_type} not available. "
+                    f"Available TensorFlow models: DeepLabV3_plus, UNet. "
+                    f"Set DEFAULT_FRAMEWORK = 'pytorch' in base/config.py to train it."
+                )
 
         # Train the model
         trainer.train(seed=seed)
